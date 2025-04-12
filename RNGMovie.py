@@ -17,8 +17,8 @@ from PIL import Image, ImageTk
 import datetime
 from typing import Optional, List
 import requests
-import openpyxl
-import datetime
+import subprocess
+
 
 # Additional import to download file from Drive
 from googleapiclient.discovery import build
@@ -29,6 +29,7 @@ from difflib import get_close_matches
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / "secret.env"
 LOG_FILE = BASE_DIR / "trailer_debug.log"
+auto_update_script = BASE_DIR / "autoUpdate.py"
 
 # JSON and local XLSX storage
 TRAILERS_DIR = BASE_DIR / "Video_Trailers"
@@ -434,6 +435,15 @@ def on_update_sheets():
             populate_json_with_movies(sheet, movies)
 
         messagebox.showinfo("Sheets Updated", f"Updated from Google Sheets!\nProcessed {len(sheet_names)} sheet(s).")
+    
+    #Runs a script that searches for YT URLS
+        try:
+            subprocess.run(["python", str(auto_update_script)], check=True)
+            log_debug("[INFO] Ran autoUpdate.py successfully.")
+        except Exception as e:
+            log_debug(f"[ERROR] Failed to run autoUpdate.py: {e}")
+            messagebox.showerror("Error", f"Failed running autoUpdate.py: {e}")    
+    
     except Exception as e:
         log_debug(f"[ERROR updating sheets]: {e}")
         messagebox.showerror("Error", "Failed to update from Google Sheets. Check logs.")
