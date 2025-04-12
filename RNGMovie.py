@@ -18,6 +18,7 @@ import datetime
 from typing import Optional, List
 import requests
 import openpyxl
+import datetime
 
 # Additional import to download file from Drive
 from googleapiclient.discovery import build
@@ -70,8 +71,9 @@ if not YOUTUBE_API_KEY:
 # ---------------- UTILS ---------------- #
 def log_debug(message: str) -> None:
     """Log debug messages to a file for troubleshooting (cross-platform)."""
+    timestamp = datetime.datetime.now().isoformat(timespec='seconds')
     with open(LOG_FILE, "a", encoding="utf-8") as log_file:
-        log_file.write(f"{message}\n")
+        log_file.write(f"[{timestamp}] {message}\n")
 
 
 def sanitize_filename(name: str) -> str:
