@@ -17,7 +17,8 @@ from PIL import Image, ImageTk
 import datetime
 from typing import Optional, List
 import requests
-import openpyxl
+import subprocess
+
 
 # Additional import to download file from Drive
 from googleapiclient.discovery import build
@@ -28,6 +29,7 @@ from difflib import get_close_matches
 BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / "secret.env"
 LOG_FILE = BASE_DIR / "trailer_debug.log"
+auto_update_script = BASE_DIR / "autoUpdate.py"
 
 # JSON and local XLSX storage
 TRAILERS_DIR = BASE_DIR / "Video_Trailers"
@@ -70,8 +72,9 @@ if not YOUTUBE_API_KEY:
 # ---------------- UTILS ---------------- #
 def log_debug(message: str) -> None:
     """Log debug messages to a file for troubleshooting (cross-platform)."""
+    timestamp = datetime.datetime.now().isoformat(timespec='seconds')
     with open(LOG_FILE, "a", encoding="utf-8") as log_file:
-        log_file.write(f"{message}\n")
+        log_file.write(f"[{timestamp}] {message}\n")
 
 
 def sanitize_filename(name: str) -> str:
@@ -89,6 +92,7 @@ def fuzzy_search(target: str, candidates: List[str], cutoff=0.8) -> Optional[str
     Return the best fuzzy match for 'target' within 'candidates'.
     By default, cutoff=0.8 for an 80% match requirement.
     """
+    from difflib import get_close_matches
     matches = get_close_matches(target, candidates, n=1, cutoff=cutoff)
     return matches[0] if matches else None
 
@@ -153,6 +157,49 @@ def download_spreadsheet_as_xlsx(spreadsheet_id: str, out_file: Path):
 
     out_file.write_bytes(fh.getvalue())
     log_debug(f"Downloaded spreadsheet to {out_file}")
+
+
+# ---------------- IGNORE GREEN TABS ---------------- #
+def get_sheet_service_for_metadata():
+    """Return an authorized 'sheets' client for reading tab colors, etc."""
+    # Reuse the same credentials file, but with Sheets scopes
+    creds = Credentials.from_service_account_file(
+        GOOGLE_SERVICE_ACCOUNT_FILE,
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    )
+    return build("sheets", "v4", credentials=creds)
+
+def get_all_sheet_names_ignoring_green() -> List[str]:
+    """
+    Return all sheet/tab names from the remote Google Spreadsheet,
+    ignoring any with a green tab color.
+    We'll define 'green' as green >= 0.8 and red+blue <= 0.2, adjust as needed.
+    """
+    service = get_sheet_service_for_metadata()
+    spreadsheet = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
+    sheets_data = spreadsheet.get("sheets", [])
+
+    result = []
+    for sheet in sheets_data:
+        props = sheet.get("properties", {})
+        title = props.get("title", "")
+        tab_color = props.get("tabColor")  # e.g. {"red": 0.0, "green": 1.0, "blue": 0.0}
+        if not tab_color:
+            # no color => definitely not green
+            result.append(title)
+            continue
+
+        # parse out the color channels
+        red   = tab_color.get("red",   0)
+        green = tab_color.get("green", 0)
+        blue  = tab_color.get("blue",  0)
+
+        # define a threshold for "green"
+        if (green >= 0.8) and (red < 0.2) and (blue < 0.2):
+            log_debug(f"Skipping sheet '{title}' because tab is green.")
+        else:
+            result.append(title)
+    return result
 
 
 # ---------------- XLSX PROCESSING (READ LOCAL FILE) ---------------- #
@@ -273,6 +320,9 @@ def get_youtube_service():
         with open(YOUTUBE_TOKEN_FILE, "rb") as token:
             creds = pickle.load(token)
     if not creds or not creds.valid:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from google.auth.transport.requests import Request
+
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
@@ -327,17 +377,16 @@ def pick_random_movies(movies: List[str], count: int) -> List[str]:
     """Randomly sample 'count' distinct movies from the 'movies' list."""
     return random.SystemRandom().sample(movies, k=count)
 
-
 def load_random_image(directory: Path, prefix: str, max_num: int):
     """
     Load a random image from 'directory' with a file name like 'prefix_1.png'
     up to 'prefix_{max_num}.png'. Return a PhotoImage or None if missing.
     """
+   
     path = directory / f"{prefix}_{random.randint(1, max_num)}.png"
     if path.exists():
         return ImageTk.PhotoImage(Image.open(path))
     return None
-
 
 def load_direction_image():
     """
@@ -349,7 +398,6 @@ def load_direction_image():
         return ImageTk.PhotoImage(Image.open(path))
     return None
 
-
 # ---------------- GUI SETUP ---------------- #
 def center_window(window, width=800, height=800):
     """Center the 'window' on the screen at the specified width and height."""
@@ -359,37 +407,46 @@ def center_window(window, width=800, height=800):
     y = (screen_height - height) // 2
     window.geometry(f"{width}x{height}+{x}+{y}")
 
-
 def on_mousewheel(event):
     """
     Cross-platform mousewheel event. Windows/macOS typically use <MouseWheel>.
     Some Linux distros might need <Button-4>/<Button-5>.
     """
-    scale = -1 * (event.delta // 120)  # typically 120 or 240 on Windows/mac
+    scale = -1 * (event.delta // 120)
     middle_canvas.yview_scroll(scale, "units")
-
 
 # ---------------- BUTTON LOGIC ---------------- #
 def on_update_sheets():
     """
     1) Download the Google Sheet as 'ghib.xlsx'
-    2) For each sheet in that file, read col A and write movie placeholders to JSON.
+    2) For each *non-green* sheet in that file, read col A and write movie placeholders to JSON.
     """
     try:
         # Download the .xlsx
         download_spreadsheet_as_xlsx(SPREADSHEET_ID, GHIB_FILE)
 
-        # For each sheet in the local XLSX, parse col A -> populate JSON
-        sheet_names = get_all_sheet_names_local(GHIB_FILE)
+        # Instead of just local sheetnames, let's ignore green tabs via the API
+        sheet_names = get_all_sheet_names_ignoring_green()
+
+        # Now for each in that list, we read the local XLSX
+        # (Which still includes them physically, but we skip them if they're green.)
         for sheet in sheet_names:
             movies = fetch_movie_list_local(GHIB_FILE, sheet)
             populate_json_with_movies(sheet, movies)
 
         messagebox.showinfo("Sheets Updated", f"Updated from Google Sheets!\nProcessed {len(sheet_names)} sheet(s).")
+    
+    #Runs a script that searches for YT URLS
+        try:
+            subprocess.run(["python", str(auto_update_script)], check=True)
+            log_debug("[INFO] Ran autoUpdate.py successfully.")
+        except Exception as e:
+            log_debug(f"[ERROR] Failed to run autoUpdate.py: {e}")
+            messagebox.showerror("Error", f"Failed running autoUpdate.py: {e}")    
+    
     except Exception as e:
         log_debug(f"[ERROR updating sheets]: {e}")
         messagebox.showerror("Error", "Failed to update from Google Sheets. Check logs.")
-
 
 def on_start(event=None):
     """
@@ -398,7 +455,6 @@ def on_start(event=None):
       - Fuzzy-match the user sheet name to the local XLSX list (80% cutoff).
       - Load col A from that sheet, pick movies, build a YT playlist, etc.
     """
-    # Validate # of attendees
     try:
         attendee_count = int(num_people_entry.get().strip())
         if attendee_count <= 0:
@@ -406,35 +462,29 @@ def on_start(event=None):
     except ValueError:
         return messagebox.showerror("Error", "Enter a positive integer for attendees.")
 
-    # Get user sheet name, remove extra spaces, lowercase
     raw_sheet_input = sheet_name_entry.get().strip()
     if not raw_sheet_input:
         return messagebox.showerror("Error", "Provide a valid sheet name.")
 
+    # If local XLSX is missing, auto-download first
     if not GHIB_FILE.exists():
-        # If local XLSX is missing, auto-download
         try:
             download_spreadsheet_as_xlsx(SPREADSHEET_ID, GHIB_FILE)
         except Exception as e:
             log_debug(f"[ERROR auto-downloading xlsx]: {e}")
             return messagebox.showerror("Error", "No local XLSX found. Try 'Update Sheets' first.")
 
-    # All actual sheet names
-    actual_sheets = get_all_sheet_names_local(GHIB_FILE)
+    # First, let's get non-green sheets from the API
+    all_non_green = get_all_sheet_names_ignoring_green()
 
-    # Create a map { normalized_name -> actual_sheet_name }
-    # e.g. "mysheet" -> "My Sheet"
-    # (strip spaces + lowercase)
+    # Create a normalized map for fuzzy matching
     sheet_map = {}
-    for s in actual_sheets:
+    for s in all_non_green:
         norm = re.sub(r"\s+", "", s.lower())
         sheet_map[norm] = s
 
-    # 1) Try direct normal comparison
     user_normal = re.sub(r"\s+", "", raw_sheet_input.lower())
     chosen_sheet = sheet_map.get(user_normal)
-
-    # 2) If not found, do fuzzy search on the keys
     if not chosen_sheet:
         possible_keys = list(sheet_map.keys())
         best_key = fuzzy_search(user_normal, possible_keys, cutoff=0.8)
@@ -442,23 +492,21 @@ def on_start(event=None):
             chosen_sheet = sheet_map[best_key]
 
     if not chosen_sheet:
-        return messagebox.showerror("Error", f"No sheet matched '{raw_sheet_input}' (80% cutoff).")
+        return messagebox.showerror("Error", f"No *non-green* sheet matched '{raw_sheet_input}' (80% cutoff).")
 
-    # Now we have chosen_sheet as the actual sheet name
+    # Now we have chosen_sheet as the actual name (ignoring green tabs)
     movies = fetch_movie_list_local(GHIB_FILE, chosen_sheet)
     if not movies or attendee_count > len(movies):
         return messagebox.showerror("Error", f"Insufficient movie data in sheet '{chosen_sheet}'.")
 
-    # Clear previous results in middle/right frames
+    # Clear old frames
     for frame in (middle_frame, right_frame):
         for widget in frame.winfo_children():
             widget.destroy()
 
-    # Pick random movies
     selected_movies = pick_random_movies(movies, attendee_count + 1)
     playlist_video_ids = []
 
-    # Build up the left vs. right columns for displaying results
     col_frame1 = tk.Frame(middle_frame, bg=BACKGROUND_COLOR)
     col_frame1.grid(row=0, column=0, sticky="nw")
 
@@ -469,7 +517,6 @@ def on_start(event=None):
     lines_in_column = 0
     max_lines_per_column = 20
 
-    # Locate trailers and build the UI labels
     for movie in selected_movies:
         trailer, source, yt_video_title = locate_trailer(chosen_sheet, movie)
         display_text = movie
@@ -480,7 +527,6 @@ def on_start(event=None):
             display_text += f" (YT: {yt_video_title})"
 
         if trailer and "youtube.com/watch?v=" in trailer:
-            # Extract the video ID
             video_id = trailer.split("v=")[-1].split("&")[0]
             playlist_video_ids.append(video_id)
 
@@ -502,27 +548,23 @@ def on_start(event=None):
 
         root.update_idletasks()
         lines_in_column += 1
-        # Switch to second column if we run out of vertical space
         if lines_in_column * (label.winfo_reqheight() + 4) >= middle_canvas.winfo_height() - 5 \
            and current_column == col_frame1:
             current_column = col_frame2
             lines_in_column = 0
 
-    # If we have any trailer IDs, build a YouTube playlist
     if playlist_video_ids:
         title = f"Movie Night {datetime.date.today()}"
         playlist_url = create_youtube_playlist(title, playlist_video_ids)
         if playlist_url:
             webbrowser.open(playlist_url)
 
-        # Show random direction image
         direction_img = load_direction_image()
         if direction_img:
             dir_label = tk.Label(right_frame, image=direction_img, bg=BACKGROUND_COLOR)
-            dir_label.image = direction_img  # keep a reference so it doesn't get GC'd
+            dir_label.image = direction_img
             dir_label.pack(pady=10)
 
-        # Show random number image
         number_img = load_random_image(NUMBERS_DIR, "number", attendee_count)
         if number_img:
             num_label = tk.Label(right_frame, image=number_img, bg=BACKGROUND_COLOR)
@@ -557,10 +599,8 @@ middle_canvas.create_window((0, 0), window=middle_frame, anchor="nw")
 
 # Cross-platform mousewheel binding
 if sys.platform.startswith("win") or sys.platform == "darwin":
-    # Windows or macOS usually support <MouseWheel>
     middle_canvas.bind_all("<MouseWheel>", on_mousewheel)
 else:
-    # Some Linux systems might need <Button-4>/<Button-5>
     middle_canvas.bind_all("<Button-4>", lambda e: middle_canvas.yview_scroll(-1, "units"))
     middle_canvas.bind_all("<Button-5>", lambda e: middle_canvas.yview_scroll(1, "units"))
 
