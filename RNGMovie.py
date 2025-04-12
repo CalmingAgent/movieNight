@@ -18,9 +18,8 @@ import datetime
 from typing import Optional, List
 import requests
 import subprocess
+import openpyxl
 
-
-# Additional import to download file from Drive
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 from difflib import get_close_matches
@@ -34,17 +33,17 @@ auto_update_script = BASE_DIR / "autoUpdate.py"
 # JSON and local XLSX storage
 TRAILERS_DIR = BASE_DIR / "Video_Trailers"
 NUMBERS_DIR = BASE_DIR / "Numbers"
-GHIB_FILE = BASE_DIR / "ghib.xlsx"  # We'll download the spreadsheet to this file each time
+GHIB_FILE = BASE_DIR / "ghib.xlsx"
 
 # Service account + client secrets
 GOOGLE_SERVICE_ACCOUNT_FILE = BASE_DIR / "service_secret.json"
 CLIENT_SECRET_FILE = BASE_DIR / "client_secret.json"
 YOUTUBE_TOKEN_FILE = BASE_DIR / "youtube_token.pickle"
 
-# Quota-limited Google Drive scope (read spreadsheet as XLSX)
+# Quota-limited Google Drive scope
 DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
-# YouTube scope for user-level actions
+# YouTube scope
 YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube"]
 
 # For searching YouTube
@@ -69,29 +68,23 @@ if not SPREADSHEET_ID:
 if not YOUTUBE_API_KEY:
     raise EnvironmentError("Missing YOUTUBE_API_KEY in secret.env")
 
-# ---------------- UTILS ---------------- #
+
+# ---------------- UTILS + LOGGING ---------------- #
 def log_debug(message: str) -> None:
-    """Log debug messages to a file for troubleshooting (cross-platform)."""
     timestamp = datetime.datetime.now().isoformat(timespec='seconds')
     with open(LOG_FILE, "a", encoding="utf-8") as log_file:
         log_file.write(f"[{timestamp}] {message}\n")
 
 
 def sanitize_filename(name: str) -> str:
-    """Remove characters invalid for filenames; strip leading/trailing spaces."""
     return re.sub(r'[<>:"/\\|?*-]', '', name.strip())
 
 
 def normalize(text: str) -> str:
-    """Lowercase the string and remove all non-alphanumeric characters."""
     return re.sub(r'[^a-z0-9]', '', text.strip().lower())
 
 
 def fuzzy_search(target: str, candidates: List[str], cutoff=0.8) -> Optional[str]:
-    """
-    Return the best fuzzy match for 'target' within 'candidates'.
-    By default, cutoff=0.8 for an 80% match requirement.
-    """
     from difflib import get_close_matches
     matches = get_close_matches(target, candidates, n=1, cutoff=cutoff)
     return matches[0] if matches else None
@@ -100,8 +93,7 @@ def fuzzy_search(target: str, candidates: List[str], cutoff=0.8) -> Optional[str
 # ---------------- YOUTUBE TRAILER SEARCH ---------------- #
 def youtube_api_search(query: str) -> Optional[tuple]:
     """
-    Use the public YouTube Search API to find a single short video by 'query'.
-    Return (video_url, video_title) if successful, else None.
+    Basic fallback for locating a trailer via the public YouTube Search API.
     """
     params = {
         "part": "snippet",
@@ -123,97 +115,15 @@ def youtube_api_search(query: str) -> Optional[tuple]:
     return None
 
 
-# ---------------- DRIVE (DOWNLOAD SHEET AS XLSX) ---------------- #
-def get_drive_service():
-    """
-    Return an authorized Drive API client using a service account
-    with 'drive.readonly' scope. The service account must have read access to the file.
-    """
-    creds = Credentials.from_service_account_file(
-        GOOGLE_SERVICE_ACCOUNT_FILE,
-        scopes=DRIVE_SCOPES
-    )
-    return build("drive", "v3", credentials=creds)
-
-
-def download_spreadsheet_as_xlsx(spreadsheet_id: str, out_file: Path):
-    """
-    Export the Google Sheet as an .xlsx (Excel) file and save it to 'out_file'.
-    Overwrites if 'out_file' already exists.
-    """
-    drive_service = get_drive_service()
-    request = drive_service.files().export_media(
-        fileId=spreadsheet_id,
-        mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    )
-
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done:
-        status, done = downloader.next_chunk()
-        if status:
-            log_debug(f"Download {int(status.progress() * 100)}%.")
-
-    out_file.write_bytes(fh.getvalue())
-    log_debug(f"Downloaded spreadsheet to {out_file}")
-
-
-# ---------------- IGNORE GREEN TABS ---------------- #
-def get_sheet_service_for_metadata():
-    """Return an authorized 'sheets' client for reading tab colors, etc."""
-    # Reuse the same credentials file, but with Sheets scopes
-    creds = Credentials.from_service_account_file(
-        GOOGLE_SERVICE_ACCOUNT_FILE,
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    )
-    return build("sheets", "v4", credentials=creds)
-
-def get_all_sheet_names_ignoring_green() -> List[str]:
-    """
-    Return all sheet/tab names from the remote Google Spreadsheet,
-    ignoring any with a green tab color.
-    We'll define 'green' as green >= 0.8 and red+blue <= 0.2, adjust as needed.
-    """
-    service = get_sheet_service_for_metadata()
-    spreadsheet = service.spreadsheets().get(spreadsheetId=SPREADSHEET_ID).execute()
-    sheets_data = spreadsheet.get("sheets", [])
-
-    result = []
-    for sheet in sheets_data:
-        props = sheet.get("properties", {})
-        title = props.get("title", "")
-        tab_color = props.get("tabColor")  # e.g. {"red": 0.0, "green": 1.0, "blue": 0.0}
-        if not tab_color:
-            # no color => definitely not green
-            result.append(title)
-            continue
-
-        # parse out the color channels
-        red   = tab_color.get("red",   0)
-        green = tab_color.get("green", 0)
-        blue  = tab_color.get("blue",  0)
-
-        # define a threshold for "green"
-        if (green >= 0.8) and (red < 0.2) and (blue < 0.2):
-            log_debug(f"Skipping sheet '{title}' because tab is green.")
-        else:
-            result.append(title)
-    return result
-
-
-# ---------------- XLSX PROCESSING (READ LOCAL FILE) ---------------- #
-def get_all_sheet_names_local(xlsx_file: Path) -> List[str]:
-    """Return a list of all sheet names from the local .xlsx file (cross-platform)."""
-    wb = openpyxl.load_workbook(xlsx_file, read_only=True)
-    return wb.sheetnames
-
-
+# ---------------- LOCAL XLSX READ (for 'Start' button) ---------------- #
 def fetch_movie_list_local(xlsx_file: Path, sheet_name: str) -> List[str]:
     """
     Read the first column (A) from 'sheet_name' in the local Excel file.
     Return a list of stripped movie names (non-empty).
     """
+    import openpyxl
+    if not xlsx_file.exists():
+        return []
     wb = openpyxl.load_workbook(xlsx_file, read_only=True)
     if sheet_name not in wb.sheetnames:
         log_debug(f"[ERROR] Sheet '{sheet_name}' not found in {xlsx_file.name}.")
@@ -228,69 +138,23 @@ def fetch_movie_list_local(xlsx_file: Path, sheet_name: str) -> List[str]:
     return movies
 
 
-# ---------------- JSON CREATION & POPULATION ---------------- #
-def ensure_url_json_exists(sheet_name: str) -> Path:
-    """
-    Create an empty JSON file named <sheetName>Urls.json (with no spaces)
-    inside TRAILERS_DIR if it doesn't exist. Return the file path.
-    """
-    safe_name = sanitize_filename(sheet_name).replace(" ", "")
-    json_file = TRAILERS_DIR / f"{safe_name}Urls.json"
-    if not json_file.exists():
-        TRAILERS_DIR.mkdir(parents=True, exist_ok=True)
-        json_file.write_text("{}", encoding="utf-8")
-        log_debug(f"[INFO] Created file: {json_file}")
-    return json_file
-
-
-def populate_json_with_movies(sheet_name: str, movies: List[str]):
-    """
-    - Ensure <sheetName>Urls.json exists (no spaces).
-    - Load its dictionary.
-    - For each movie in 'movies', if not present, add with empty value "".
-    - Write back the JSON in multiline format with no trailing comma.
-    """
-    json_file = ensure_url_json_exists(sheet_name)
-
-    try:
-        existing_data = json.loads(json_file.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        existing_data = {}
-
-    for mv in movies:
-        if mv not in existing_data:
-            existing_data[mv] = ""
-
-    # Write multiline JSON with no trailing comma
-    lines = ["{"]
-    keys = list(existing_data.keys())
-    for i, key in enumerate(keys):
-        comma = "," if i < len(keys) - 1 else ""
-        lines.append(f'  "{key}": "{existing_data[key]}"{comma}')
-    lines.append("}")
-
-    json_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    log_debug(f"[INFO] Updated {json_file}")
-
-
-# ---------------- LOCATE TRAILER (READ JSON OR SEARCH YT) ---------------- #
 def locate_trailer(sheet_name: str, movie_title: str) -> (Optional[str], str, Optional[str]):
     """
-    Look up a trailer URL in <sheetName>Urls.json, or fallback to YouTube search.
+    Try to read <sheetName>Urls.json in TRAILERS_DIR, else fallback to youtube_api_search.
     Return (url, source, video_title).
     """
     safe_sheet = sanitize_filename(sheet_name).replace(" ", "")
     urls_file = TRAILERS_DIR / f"{safe_sheet}Urls.json"
 
-    # 1. Check local JSON file
+    # 1. Check local JSON
     if urls_file.exists():
         try:
-            url_dict = json.loads(urls_file.read_text(encoding="utf-8"))
-            normalized_dict = {normalize(k): v for k, v in url_dict.items()}
+            data = json.loads(urls_file.read_text(encoding="utf-8"))
+            normalized_map = {normalize(k): v for k, v in data.items()}
             key = normalize(movie_title)
             matched_url = (
-                normalized_dict.get(key)
-                or normalized_dict.get(fuzzy_search(key, list(normalized_dict.keys())) or '')
+                normalized_map.get(key)
+                or normalized_map.get(fuzzy_search(key, list(normalized_map.keys())) or '')
             )
             if matched_url and "youtube.com" in matched_url:
                 return matched_url, "json", None
@@ -299,30 +163,26 @@ def locate_trailer(sheet_name: str, movie_title: str) -> (Optional[str], str, Op
         except json.JSONDecodeError as e:
             log_debug(f"[ERROR] JSON decoding failed: {e}")
 
-    # 2. Fallback: YouTube search API
+    # 2. fallback to YouTube
     api_result = youtube_api_search(movie_title + " official hd trailer")
     if api_result:
         api_url, yt_video_title = api_result
         return api_url, "youtube", yt_video_title
 
-    # 3. No trailer found
     return None, "", None
 
 
 # ---------------- YOUTUBE PLAYLIST CREATION ---------------- #
 def get_youtube_service():
-    """
-    Create and return an authorized YouTube Data API client using OAuth (for user-level actions).
-    Stores and reuses credentials in 'youtube_token.pickle'.
-    """
+    from google.auth.transport.requests import Request
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    import pickle
+
     creds = None
     if YOUTUBE_TOKEN_FILE.exists():
         with open(YOUTUBE_TOKEN_FILE, "rb") as token:
             creds = pickle.load(token)
     if not creds or not creds.valid:
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
-
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
@@ -334,10 +194,6 @@ def get_youtube_service():
 
 
 def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
-    """
-    Create an unlisted YouTube playlist named 'title' and populate it with video_ids.
-    Return the playlist URL or None on failure.
-    """
     try:
         youtube = get_youtube_service()
         playlist = youtube.playlists().insert(
@@ -374,86 +230,60 @@ def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
 
 # ---------------- IMAGE HANDLING ---------------- #
 def pick_random_movies(movies: List[str], count: int) -> List[str]:
-    """Randomly sample 'count' distinct movies from the 'movies' list."""
     return random.SystemRandom().sample(movies, k=count)
 
 def load_random_image(directory: Path, prefix: str, max_num: int):
-    """
-    Load a random image from 'directory' with a file name like 'prefix_1.png'
-    up to 'prefix_{max_num}.png'. Return a PhotoImage or None if missing.
-    """
-   
     path = directory / f"{prefix}_{random.randint(1, max_num)}.png"
     if path.exists():
         return ImageTk.PhotoImage(Image.open(path))
     return None
 
 def load_direction_image():
-    """
-    Load a random direction image (clockwise or counter_clockwise) from NUMBERS_DIR.
-    """
     direction = random.choice(["clockwise", "counter_clockwise"])
     path = NUMBERS_DIR / f"{direction}.png"
     if path.exists():
         return ImageTk.PhotoImage(Image.open(path))
     return None
 
+
 # ---------------- GUI SETUP ---------------- #
 def center_window(window, width=800, height=800):
-    """Center the 'window' on the screen at the specified width and height."""
     screen_width = window.winfo_screenwidth()
     screen_height = window.winfo_screenheight()
     x = (screen_width - width) // 2
     y = (screen_height - height) // 2
     window.geometry(f"{width}x{height}+{x}+{y}")
 
+
 def on_mousewheel(event):
-    """
-    Cross-platform mousewheel event. Windows/macOS typically use <MouseWheel>.
-    Some Linux distros might need <Button-4>/<Button-5>.
-    """
     scale = -1 * (event.delta // 120)
     middle_canvas.yview_scroll(scale, "units")
+
 
 # ---------------- BUTTON LOGIC ---------------- #
 def on_update_sheets():
     """
-    1) Download the Google Sheet as 'ghib.xlsx'
-    2) For each *non-green* sheet in that file, read col A and write movie placeholders to JSON.
+    Simply run autoUpdate.py, which:
+      - Downloads the spreadsheet
+      - Ignores green tabs
+      - Creates/updates JSON
+      - Fills missing TMDB/YouTube links
     """
     try:
-        # Download the .xlsx
-        download_spreadsheet_as_xlsx(SPREADSHEET_ID, GHIB_FILE)
-
-        # Instead of just local sheetnames, let's ignore green tabs via the API
-        sheet_names = get_all_sheet_names_ignoring_green()
-
-        # Now for each in that list, we read the local XLSX
-        # (Which still includes them physically, but we skip them if they're green.)
-        for sheet in sheet_names:
-            movies = fetch_movie_list_local(GHIB_FILE, sheet)
-            populate_json_with_movies(sheet, movies)
-
-        messagebox.showinfo("Sheets Updated", f"Updated from Google Sheets!\nProcessed {len(sheet_names)} sheet(s).")
-    
-    #Runs a script that searches for YT URLS
-        try:
-            subprocess.run(["python", str(auto_update_script)], check=True)
-            log_debug("[INFO] Ran autoUpdate.py successfully.")
-        except Exception as e:
-            log_debug(f"[ERROR] Failed to run autoUpdate.py: {e}")
-            messagebox.showerror("Error", f"Failed running autoUpdate.py: {e}")    
-    
+        subprocess.run(["python", str(auto_update_script)], check=True)
+        messagebox.showinfo("Sheets Updated", "Sheets were updated via autoUpdate.py!")
     except Exception as e:
-        log_debug(f"[ERROR updating sheets]: {e}")
-        messagebox.showerror("Error", "Failed to update from Google Sheets. Check logs.")
+        log_debug(f"[ERROR] Failed to run autoUpdate.py: {e}")
+        messagebox.showerror("Error", f"Failed running autoUpdate.py: {e}")
+
 
 def on_start(event=None):
     """
-    Main 'Start' button callback:
-      - Ask for # of attendees and a sheet name.
-      - Fuzzy-match the user sheet name to the local XLSX list (80% cutoff).
-      - Load col A from that sheet, pick movies, build a YT playlist, etc.
+    Main 'Start' button logic:
+      - # of Attendees
+      - user-provided sheet name
+      - pick random movies
+      - build YT playlist
     """
     try:
         attendee_count = int(num_people_entry.get().strip())
@@ -466,20 +296,17 @@ def on_start(event=None):
     if not raw_sheet_input:
         return messagebox.showerror("Error", "Provide a valid sheet name.")
 
-    # If local XLSX is missing, auto-download first
+    # We'll just rely on the local XLSX to find the sheet
     if not GHIB_FILE.exists():
-        try:
-            download_spreadsheet_as_xlsx(SPREADSHEET_ID, GHIB_FILE)
-        except Exception as e:
-            log_debug(f"[ERROR auto-downloading xlsx]: {e}")
-            return messagebox.showerror("Error", "No local XLSX found. Try 'Update Sheets' first.")
+        return messagebox.showerror("Error", "No local ghib.xlsx found. Update Sheets first?")
 
-    # First, let's get non-green sheets from the API
-    all_non_green = get_all_sheet_names_ignoring_green()
+    # We'll search all local sheets; user may or may not want to skip green. 
+    wb = openpyxl.load_workbook(GHIB_FILE, read_only=True)
+    local_sheets = wb.sheetnames
 
-    # Create a normalized map for fuzzy matching
+    # Build a map for fuzzy search
     sheet_map = {}
-    for s in all_non_green:
+    for s in local_sheets:
         norm = re.sub(r"\s+", "", s.lower())
         sheet_map[norm] = s
 
@@ -492,18 +319,18 @@ def on_start(event=None):
             chosen_sheet = sheet_map[best_key]
 
     if not chosen_sheet:
-        return messagebox.showerror("Error", f"No *non-green* sheet matched '{raw_sheet_input}' (80% cutoff).")
+        return messagebox.showerror("Error", f"No local sheet matched '{raw_sheet_input}'")
 
-    # Now we have chosen_sheet as the actual name (ignoring green tabs)
     movies = fetch_movie_list_local(GHIB_FILE, chosen_sheet)
     if not movies or attendee_count > len(movies):
-        return messagebox.showerror("Error", f"Insufficient movie data in sheet '{chosen_sheet}'.")
+        return messagebox.showerror("Error", f"Insufficient data in sheet '{chosen_sheet}'.")
 
-    # Clear old frames
+    # Clear frames
     for frame in (middle_frame, right_frame):
         for widget in frame.winfo_children():
             widget.destroy()
 
+    # Random picks
     selected_movies = pick_random_movies(movies, attendee_count + 1)
     playlist_video_ids = []
 
@@ -515,7 +342,6 @@ def on_start(event=None):
 
     current_column = col_frame1
     lines_in_column = 0
-    max_lines_per_column = 20
 
     for movie in selected_movies:
         trailer, source, yt_video_title = locate_trailer(chosen_sheet, movie)
@@ -530,20 +356,16 @@ def on_start(event=None):
             video_id = trailer.split("v=")[-1].split("&")[0]
             playlist_video_ids.append(video_id)
 
-            label = tk.Label(
-                current_column, text=display_text, fg=color,
-                cursor="hand2", wraplength=280, justify="left",
-                bg=BACKGROUND_COLOR
-            )
+            label = tk.Label(current_column, text=display_text, fg=color,
+                             cursor="hand2", wraplength=280, justify="left",
+                             bg=BACKGROUND_COLOR)
             label.pack(anchor="w", pady=2)
             label.bind("<Button-1>", lambda e, url=trailer: webbrowser.open(url))
         else:
-            label = tk.Label(
-                current_column,
-                text=f"{movie}: No trailer found",
-                fg=ERROR_COLOR, wraplength=280, justify="left",
-                bg=BACKGROUND_COLOR
-            )
+            label = tk.Label(current_column,
+                             text=f"{movie}: No trailer found",
+                             fg=ERROR_COLOR, wraplength=280, justify="left",
+                             bg=BACKGROUND_COLOR)
             label.pack(anchor="w", pady=2)
 
         root.update_idletasks()
@@ -553,6 +375,7 @@ def on_start(event=None):
             current_column = col_frame2
             lines_in_column = 0
 
+    # If we have at least one YT link, create a playlist
     if playlist_video_ids:
         title = f"Movie Night {datetime.date.today()}"
         playlist_url = create_youtube_playlist(title, playlist_video_ids)
@@ -597,7 +420,6 @@ middle_canvas.bind('<Configure>', lambda e: middle_canvas.configure(scrollregion
 middle_frame = tk.Frame(middle_canvas, bg=BACKGROUND_COLOR)
 middle_canvas.create_window((0, 0), window=middle_frame, anchor="nw")
 
-# Cross-platform mousewheel binding
 if sys.platform.startswith("win") or sys.platform == "darwin":
     middle_canvas.bind_all("<MouseWheel>", on_mousewheel)
 else:
