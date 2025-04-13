@@ -562,7 +562,7 @@ sheet_name_entry.pack(pady=5)
 
 start_button = tk.Button(
     left_frame,
-    text="Start",
+    text="Generate Movies",
     command=on_start,
     bg=BUTTON_COLOR,
     fg=FOREGROUND_COLOR,
