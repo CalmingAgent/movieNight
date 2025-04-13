@@ -60,7 +60,7 @@ This will download the spreadsheet as `ghib.xlsx` and create/update the necessar
 
 5. **Run the GUI App**
 ```bash
-python moviePickerApp.py
+python RNGMovie.py
 ```
 
 ---
