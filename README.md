@@ -1,6 +1,6 @@
 # Movie Night Picker App
 
-This is a cross-platform Python application designed to randomly pick movies from a Google Sheets spreadsheet and play their trailers using YouTube. It includes functionality for viewing, reporting, and updating movie trailers, and it works well in WSL, Windows, and macOS environments.
+This is a cross-platform Python application designed to randomly pick movies from a Google Sheets spreadsheet and play their trailers using YouTube. the program add's an extra movie for a voting proccess. It includes functionality for viewing, reporting, and updating movie trailers, and it works well in WSL, Windows, and macOS environments.
 
 ---
 
