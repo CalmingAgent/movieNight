@@ -76,8 +76,6 @@ python RNGMovie.py
 
 - **Report Feature**: Use the "Report Trailers" button to flag incorrect trailers. These go into `underReviewURLs.json`.
 
-- Green sheet tabs can be used as notes for the google sheet, it does not get those sheet names
-
 - google sheet format: only uses the first column to get movie names.
 
 - Each sheet name represents typically a genre of such
