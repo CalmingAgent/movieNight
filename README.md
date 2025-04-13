@@ -32,13 +32,6 @@ This is a cross-platform Python application designed to randomly pick movies fro
   - `openpyxl`
   - `Pillow`
 
-Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
----
-
 ## Setup Instructions
 
 1. **Clone the Repository**
@@ -82,6 +75,12 @@ python moviePickerApp.py
 - **Trailer JSON Files** are created in `Video_Trailers/`, one for each non-green sheet.
 
 - **Report Feature**: Use the "Report Trailers" button to flag incorrect trailers. These go into `underReviewURLs.json`.
+
+- Green sheet tabs can be used as notes for the google sheet, it does not get those sheet names
+
+- google sheet format: only uses the first column to get movie names.
+
+- Each sheet name represents typically a genre of such
 
 ---
 
