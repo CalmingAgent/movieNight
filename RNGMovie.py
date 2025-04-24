@@ -1,24 +1,34 @@
+from __future__ import annotations
 import os
 import re
 import io
 import json
 import random
-import webbrowser
 import sys
-import tkinter as tk
 from tkinter import messagebox
 from pathlib import Path
 from dotenv import load_dotenv
-from google.oauth2.service_account import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
 import pickle
-from PIL import Image, ImageTk
 import datetime
 from typing import Optional, List
 import requests
 import subprocess
 import openpyxl
+
+
+
+from pathlib import Path
+import datetime, random, importlib
+
+from PySide6.QtCore    import Qt, QSize, Slot
+from PySide6.QtGui     import QAction, QIcon, QPalette, QColor
+from PySide6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QListWidget, QListWidgetItem, QLabel, QStackedWidget, QPushButton,
+    QLineEdit, QFileDialog, QSplitter, QFrame, QTableWidget,
+    QTableWidgetItem, QSizePolicy, QDialog, QCheckBox, QDialogButtonBox, QMessageBox, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
+    QScrollArea, QFrame, QSizePolicy
+)
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -29,11 +39,13 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_PATH = BASE_DIR / "secret.env"
 LOG_FILE = BASE_DIR / "trailer_debug.log"
 auto_update_script = BASE_DIR / "autoUpdate.py"
+probability_script = BASE_DIR/ "probability.py"
 
 # JSON and local XLSX storage
 TRAILERS_DIR = BASE_DIR / "Video_Trailers"
 NUMBERS_DIR = BASE_DIR / "Numbers"
 GHIB_FILE = BASE_DIR / "ghib.xlsx"
+ICON = lambda n: QIcon(str(BASE_DIR / "icons" / f"{n}.svg"))
 
 # The new file to track reported/wrong trailers
 UNDER_REVIEW_FILE = BASE_DIR / "underReviewURLs.json"
@@ -52,13 +64,15 @@ YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube"]
 # For searching YouTube
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 
-# -------------DARK MODE THEME COLORS --------------------- #
-BACKGROUND_COLOR = "#2e2e2e"
-FOREGROUND_COLOR = "#e0e0e0"
-BUTTON_COLOR = "#444444"
-HIGHLIGHT_COLOR = "#5c5c5c"
-ERROR_COLOR = "#ff4c4c"
-FALLBACK_COLOR = "#ffa500"
+# App Constants
+ACCENT  = "#3b82f6"  # Tailwind ‘blue-500’
+# stub import for the forthcoming probability pipeline
+def movie_prob(title: str) -> float:
+    try:
+        prob_mod = importlib.import_module("probability")
+        return float(prob_mod.get_prob(title))
+    except Exception:
+        return 0.0            # placeholder until probability.py exists
 
 # ----------------- ENVIRONMENT LOADING ------------------- #
 load_dotenv(ENV_PATH)
@@ -295,291 +309,242 @@ def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
     return None
 
 
-# ---------------- IMAGE HANDLING ---------------- #
 def pick_random_movies(movies: List[str], count: int) -> List[str]:
     """Randomly sample 'count' distinct movies from the 'movies' list."""
     return random.SystemRandom().sample(movies, k=count)
 
+        
+class PickerPage(QWidget):
+    """Left: picker; Right: controls & images."""
+    def __init__(self, parent: "MainWindow"):
+        super().__init__()
+        self.win = parent
 
-def load_random_image(directory: Path, prefix: str, max_num: int):
-    """
-    Load a random image from 'directory' => e.g., prefix_1.png..prefix_{max_num}.png
-    Return a PhotoImage or None if missing.
-    """
-    from PIL import Image, ImageTk
-    path = directory / f"{prefix}_{random.randint(1, max_num)}.png"
-    if path.exists():
-        return ImageTk.PhotoImage(Image.open(path))
-    return None
+        outer = QHBoxLayout(self)
 
-def load_direction_image():
-    """Load a random direction image (clockwise or counter_clockwise) from NUMBERS_DIR."""
-    from PIL import Image, ImageTk
-    direction = random.choice(["clockwise", "counter_clockwise"])
-    path = NUMBERS_DIR / f"{direction}.png"
-    if path.exists():
-        return ImageTk.PhotoImage(Image.open(path))
-    return None
+        # ---------- left controls ----------
+        ctrl = QVBoxLayout()
+        self.attendees_in = QLineEdit();  self.attendees_in.setPlaceholderText("# attendees")
+        self.sheet_in     = QLineEdit();  self.sheet_in.setPlaceholderText("Sheet name")
+        gen_btn = QPushButton("Generate Movies")
+        upd_btn = QPushButton("Update URLs")
+        gen_btn.clicked.connect(self.win.generate_movies)
+        upd_btn.clicked.connect(self.win.update_urls)
 
-# ---------------- GUI SETUP ---------------- #
-def center_window(window, width=800, height=800):
-    """Center 'window' on screen at specified width/height."""
-    screen_width = window.winfo_screenwidth()
-    screen_height = window.winfo_screenheight()
-    x = (screen_width - width) // 2
-    y = (screen_height - height) // 2
-    window.geometry(f"{width}x{height}+{x}+{y}")
+        ctrl.addWidget(self.attendees_in)
+        ctrl.addWidget(self.sheet_in)
+        ctrl.addWidget(gen_btn)
+        ctrl.addWidget(upd_btn)
+        ctrl.addStretch()
+        outer.addLayout(ctrl, 0)
 
+        # ---------- middle: scroll area with movie labels ----------
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.list_container = QWidget()
+        self.list_layout = QVBoxLayout(self.list_container)
+        self.list_layout.setAlignment(Qt.AlignTop)
+        self.scroll.setWidget(self.list_container)
+        outer.addWidget(self.scroll, 2)
 
-def on_mousewheel(event):
-    """
-    Cross-platform mousewheel event. Windows/mac => <MouseWheel>.
-    Some Linux => <Button-4>/<Button-5>.
-    """
-    scale = -1 * (event.delta // 120)
-    middle_canvas.yview_scroll(scale, "units")
+        # ---------- right: extra widgets ----------
+        right = QVBoxLayout()
+        self.stats_lbl  = QLabel("", alignment=Qt.AlignCenter)
+        self.report_btn = QPushButton("Report Trailers")
+        self.report_btn.clicked.connect(self.report_trailers)
+        right.addWidget(self.stats_lbl)
+        right.addWidget(self.report_btn)
+        right.addStretch()
+        outer.addLayout(right, 0)
+    # −−− helpers −−−#
+def populate(self, movies: list[str], trailer_lookup: dict[str, str]):
+    """Replace current list with HTML links + probability badges."""
+    # clear previous widgets
+    while (child := self.list_layout.takeAt(0)):
+        if child.widget():
+            child.widget().deleteLater()
 
-# ---------------- BUTTON LOGIC ---------------- #
-def on_update_sheets():
-    """
-    When the user clicks "Update Sheets":
-    1) Call autoUpdate.py (which handles the entire updating logic).
-    """
-    try:
-        subprocess.run(["python", str(auto_update_script)], check=True)
-        log_debug("[INFO] Ran autoUpdate.py successfully.")
-        messagebox.showinfo("Sheets Updated", "Sheets + JSON updated successfully.")
-    except Exception as e:
-        log_debug(f"[ERROR] Failed running autoUpdate.py: {e}")
-        messagebox.showerror("Error", f"Failed running autoUpdate.py: {e}")
+    for title in movies:
+        url   = trailer_lookup.get(title, "")
+        prob  = f"{movie_prob(title):.02f}"
 
-
-def on_start(event=None):
-    """
-    Main 'Start' button callback to pick random movies from a user-chosen sheet
-    and create a playlist. If user sees an incorrect trailer, they can click REPORT.
-    """
-    from difflib import get_close_matches
-
-    try:
-        attendee_count = int(num_people_entry.get().strip())
-        if attendee_count <= 0:
-            raise ValueError
-    except ValueError:
-        return messagebox.showerror("Error", "Enter a positive integer for attendees.")
-
-    raw_sheet_input = sheet_name_entry.get().strip()
-    if not raw_sheet_input:
-        return messagebox.showerror("Error", "Provide a valid sheet name.")
-
-    # Make sure local XLSX is present. 
-    if not GHIB_FILE.exists():
-        return messagebox.showerror("Error", "No local XLSX found. Try 'Update Sheets' first.")
-
-    # Load local sheets from the xlsx
-    wb = openpyxl.load_workbook(GHIB_FILE, read_only=True)
-    all_local_sheets = wb.sheetnames
-
-    # Build a normalized map for fuzzy searching
-    sheet_map = {}
-    for s in all_local_sheets:
-        norm = re.sub(r"\s+", "", s.lower())
-        sheet_map[norm] = s
-
-    user_normal = re.sub(r"\s+", "", raw_sheet_input.lower())
-    chosen_sheet = sheet_map.get(user_normal)
-
-    if not chosen_sheet:
-        # If no direct match, do fuzzy
-        possible_keys = list(sheet_map.keys())
-        best_key = fuzzy_search(user_normal, possible_keys, cutoff=0.8)
-        if best_key:
-            chosen_sheet = sheet_map[best_key]
-
-    if not chosen_sheet:
-        return messagebox.showerror("Error", f"No local sheet matched '{raw_sheet_input}' (80% cutoff).")
-
-    # Now we have a valid sheet
-    sheet = wb[chosen_sheet]
-    movies = []
-    for row in sheet.iter_rows(min_row=1, max_col=1, values_only=True):
-        val = row[0]
-        if val and str(val).strip():
-            movies.append(str(val).strip())
-    if not movies or attendee_count > len(movies):
-        return messagebox.showerror("Error", f"Insufficient movie data in sheet '{chosen_sheet}'.")
-
-    # Clear UI frames
-    for frame in (middle_frame, right_frame):
-        for widget in frame.winfo_children():
-            widget.destroy()
-
-    # Randomly pick movies
-    selected_movies = pick_random_movies(movies, attendee_count + 1)
-    playlist_video_ids = []
-
-    # Create columns
-    col_frame1 = tk.Frame(middle_frame, bg=BACKGROUND_COLOR)
-    col_frame1.grid(row=0, column=0, sticky="nw")
-
-    col_frame2 = tk.Frame(middle_frame, bg=BACKGROUND_COLOR)
-    col_frame2.grid(row=0, column=1, sticky="nw", padx=20)
-
-    current_column = col_frame1
-    lines_in_column = 0
-
-    for movie in selected_movies:
-        trailer, source, yt_video_title = locate_trailer(chosen_sheet, movie)
-        display_text = movie
-        color = "white"
-
-        if source == "youtube" and yt_video_title:
-            color = FALLBACK_COLOR
-            display_text += f" (YT: {yt_video_title})"
-
-        if trailer and "youtube.com/watch?v=" in trailer:
-            video_id = trailer.split("v=")[-1].split("&")[0]
-            playlist_video_ids.append(video_id)
-
-            # Single row for movie + report
-            row_frame = tk.Frame(current_column, bg=BACKGROUND_COLOR)
-            row_frame.pack(anchor="w", fill="x", pady=2)
-
-            # The clickable movie/trailer label
-            label = tk.Label(
-                row_frame,
-                text=display_text,
-                fg=color,
-                cursor="hand2",
-                wraplength=280,
-                justify="left",
-                bg=BACKGROUND_COLOR
-            )
-            label.pack(side="left", padx=2)
-            label.bind("<Button-1>", lambda e, url=trailer: open_in_windows_default(url))
-
+        if not url:                     # no trailer at all → plain grey text
+            html = f'<span style="color:#888">{title} (no trailer)</span> '\
+                   f'<span style="color:#aaa">({prob})</span>'
+            lbl = QLabel(html)
+            lbl.setTextFormat(Qt.RichText)
         else:
-            # If no trailer found
-            label = tk.Label(
-                current_column,
-                text=f"{movie}: No trailer found",
-                fg=ERROR_COLOR,
-                wraplength=280,
-                justify="left",
-                bg=BACKGROUND_COLOR
+            colour = "#ffa500" if "youtube.com" in url else "#ffffff"
+            html   = (
+                f'<a href="{url}" style="text-decoration:none;color:{colour};">'
+                f'{title}</a> &nbsp;<span style="color:#aaa">({prob})</span>'
             )
-            label.pack(anchor="w", pady=2)
+            lbl = QLabel(html)
+            lbl.setTextFormat(Qt.RichText)
+            lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            lbl.setOpenExternalLinks(False)     # we open manually
+            # • capture 'url' NOW so late-binding doesn’t bite
+            lbl.linkActivated.connect(
+                lambda _ignored, link=url: QDesktopServices.openUrl(QUrl(link))
+            )
 
-        root.update_idletasks()
-        lines_in_column += 1
+        lbl.setWordWrap(True)
+        lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.list_layout.addWidget(lbl)
 
-        # Switch column if we run out of vertical space
-        if lines_in_column * (label.winfo_reqheight() + 4) >= middle_canvas.winfo_height() - 5 \
-           and current_column == col_frame1:
-            current_column = col_frame2
-            lines_in_column = 0
+class StatsPage(QWidget):
+    """Shows historical stats (placeholder demo)."""
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
 
-    # If we have a playlist
-    if playlist_video_ids:
-        title = f"Movie Night {datetime.date.today()}"
-        playlist_url = create_youtube_playlist(title, playlist_video_ids)
-        if playlist_url:
-            open_in_windows_default(playlist_url)
-    else:
-        tk.messagebox.showinfo("No Trailers", "No valid trailers found.")
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Movie", "Times Picked", "Avg. Score"])
+        lay.addWidget(self.table)
+
+    def load_stats(self, stats: list[tuple[str,int,float]]):
+        self.table.setRowCount(len(stats))
+        for r,(m,c,s) in enumerate(stats):
+            self.table.setItem(r,0,QTableWidgetItem(m))
+            self.table.setItem(r,1,QTableWidgetItem(str(c)))
+            self.table.setItem(r,2,QTableWidgetItem(f"{s:.2f}")) 
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Movie Night")
+        self.resize(960, 600)
+
+        # sidebar navigation
+        self.nav   = QListWidget();  self.nav.setFixedWidth(170)
+        self.pages = QStackedWidget()
+        self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
+
+        # pages
+        self.picker = PickerPage(self);  self.add_page("Picker", "grid")
+        self.stats  = StatsPage();       self.add_page("Stats",  "bar")
+
+        # layout
+        body = QSplitter();  body.setHandleWidth(1)
+        body.addWidget(self.nav);  body.addWidget(self.pages);  body.setStretchFactor(1,1)
+        self.setCentralWidget(body)
+
+        # toolbar actions
+        self.new_act = QAction(ICON("refresh"), "Re-roll", self)
+        self.new_act.setShortcut("Ctrl+R")
+        self.new_act.triggered.connect(self.generate_movies)
+        self.addToolBar("Main").addAction(self.new_act)
+
+    def add_page(self, name: str, ico: str):
+        self.nav.addItem(QListWidgetItem(ICON(ico), f"  {name}"))
+        self.pages.addWidget(getattr(self, name.lower()))
+#----------------Button Callbacks ----------#    
+    @Slot()
+    def update_urls(self):
+        """
+        When the user clicks "Update Sheets":
+        1) Call autoUpdate.py (which handles the entire updating logic).
+        """
+        try:
+            subprocess.run(["python", str(auto_update_script)], check=True)
+            log_debug("[INFO] Ran autoUpdate.py successfully.")
+            messagebox.showinfo("Sheets Updated", "Sheets + JSON updated successfully.")
+        except Exception as e:
+            log_debug(f"[ERROR] Failed running autoUpdate.py: {e}")
+            QMessageBox.warning(self,"Error", f"Failed running autoUpdate.py: {e}")
+    @Slot()
+    def generate_movies(self):
+        from difflib import get_close_matches
+        raw_attendees = self.attendees_in.text().strip()
+        try:
+            attendee_count = int(raw_attendees)
+            if attendee_count <= 0:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(
+            self, "Input error",
+            "Enter a positive whole number for the number of attendees.")
+            return
+
+        raw_sheet_input = self.sheet_in.text().strip()
+        if not raw_sheet_input:
+            return QMessageBox.warning(self,"Error", "Provide a valid sheet name.")
+
+        # Make sure local XLSX is present. 
+        if not GHIB_FILE.exists():
+            return QMessageBox.warning(self,"Error", "No local XLSX found. Try 'Update Sheets' first.")
+
+        # Load local sheets from the xlsx
+        wb = openpyxl.load_workbook(GHIB_FILE, read_only=True)
+        all_local_sheets = wb.sheetnames
+
+        # Build a normalized map for fuzzy searching
+        sheet_map = {}
+        for s in all_local_sheets:
+            norm = re.sub(r"\s+", "", s.lower())
+            sheet_map[norm] = s
+
+        user_normal = re.sub(r"\s+", "", raw_sheet_input.lower())
+        chosen_sheet = sheet_map.get(user_normal)
+
+        if not chosen_sheet:
+            # If no direct match, do fuzzy
+            possible_keys = list(sheet_map.keys())
+            best_key = fuzzy_search(user_normal, possible_keys, cutoff=0.8)
+            if best_key:
+                chosen_sheet = sheet_map[best_key]
+
+        if not chosen_sheet:
+            return QMessageBox.warning(self,"Error", f"No local sheet matched '{raw_sheet_input}' (80% cutoff).")
+
+        # Now we have a valid sheet
+        sheet = wb[chosen_sheet]
+        movies = []
+        for row in sheet.iter_rows(min_row=1, max_col=1, values_only=True):
+            val = row[0]
+            if val and str(val).strip():
+                movies.append(str(val).strip())
+        if not movies or attendee_count > len(movies):
+            return QMessageBox.warning(self,"Error", f"Insufficient movie data in sheet '{chosen_sheet}'.")
+        # Randomly pick movies
+        selected_movies = pick_random_movies(movies, attendee_count + 1)
+        playlist_video_ids = []
+        trailer_lookup = {m: locate_trailer(chosen_sheet, m)[0]
+                  for m in selected_movies}
+
         
-    direction_img = load_direction_image()
-    if direction_img:
-        dir_label = tk.Label(right_frame, image=direction_img, bg=BACKGROUND_COLOR)
-        dir_label.image = direction_img
-        dir_label.pack(pady=10)
+        #build video-id list for the playlist
+        for m, url in trailer_lookup.items():
+            if url and "youtube.com/watch?v=" in url:
+                vid = url.split("v=")[-1].split("&")[0]
+                playlist_video_ids.append(vid)
 
-    number_img = load_random_image(NUMBERS_DIR, "number", attendee_count)
-    if number_img:
-        num_label = tk.Label(right_frame, image=number_img, bg=BACKGROUND_COLOR)
-        num_label.image = number_img
-        num_label.pack(pady=10)
-        
-    #creates report button
-    report_button = tk.Button(
-    right_frame,
-    text="Report Trailers",
-    command=lambda: open_report_dialog(selected_movies, {m: locate_trailer(chosen_sheet, m)[0] for m in selected_movies}),
-    bg=ERROR_COLOR,
-    fg="white")
-    report_button.pack(pady=10) 
+        #update UI  (shows links + probability badge)
+        self.picker.populate(selected_movies, trailer_lookup)
 
+        # 5) optional stats page refresh
+        self.stats.load_stats([
+            (m, random.randint(1, 12), random.uniform(1, 5))
+            for m in selected_movies
+        ])
 
-# ---------------- MAIN APP WITH SCROLL + DARK MODE ---------------- #
-root = tk.Tk()
-root.title("Random Movie Picker")
-root.configure(bg=BACKGROUND_COLOR)
+        # 6) make + open playlist
+        if playlist_video_ids:
+            title = f"Movie Night {datetime.date.today()}"
+            url = create_youtube_playlist(title, playlist_video_ids)
+            if url:
+                QDesktopServices.openUrl(QUrl(url))
+        else:
+            QMessageBox.information(self, "No Trailers", "No valid trailers found.")
 
-left_frame = tk.Frame(root, padx=10, pady=10, bg=BACKGROUND_COLOR)
-left_frame.pack(side="left", fill="y")
+        # 7) hand data to the Report button
+        self.picker.enable_report_button(selected_movies, trailer_lookup)
+# ---------------- MAIN APP---------------- #
+def main():
+    app = QApplication([])
+    import qdarktheme;  qdarktheme.setup_theme("dark", corner_shape="rounded", custom_colors={"primary": ACCENT})
+    win = MainWindow();  win.show()
+    app.exec()
 
-middle_container = tk.Frame(root, padx=10, pady=10, bg=BACKGROUND_COLOR)
-middle_container.pack(side="left", fill="both", expand=True)
-
-middle_canvas = tk.Canvas(middle_container, bg=BACKGROUND_COLOR, highlightthickness=0)
-middle_canvas.pack(side="left", fill="both", expand=True)
-
-scrollbar = tk.Scrollbar(middle_container, orient="vertical", command=middle_canvas.yview, bg=BACKGROUND_COLOR)
-scrollbar.pack(side="right", fill="y")
-
-middle_canvas.configure(yscrollcommand=scrollbar.set)
-middle_canvas.bind('<Configure>', lambda e: middle_canvas.configure(scrollregion=middle_canvas.bbox("all")))
-
-middle_frame = tk.Frame(middle_canvas, bg=BACKGROUND_COLOR)
-middle_canvas.create_window((0, 0), window=middle_frame, anchor="nw")
-
-if sys.platform.startswith("win") or sys.platform == "darwin":
-    middle_canvas.bind_all("<MouseWheel>", on_mousewheel)
-else:
-    middle_canvas.bind_all("<Button-4>", lambda e: middle_canvas.yview_scroll(-1, "units"))
-    middle_canvas.bind_all("<Button-5>", lambda e: middle_canvas.yview_scroll(1, "units"))
-
-right_frame = tk.Frame(root, padx=10, pady=10, bg=BACKGROUND_COLOR)
-right_frame.pack(side="right", fill="y")
-
-# Labels + Inputs
-tk.Label(middle_frame, text="Movie Names", bg=BACKGROUND_COLOR, fg=FOREGROUND_COLOR)\
-  .grid(row=0, column=0, columnspan=2, sticky="nw")
-
-tk.Label(right_frame, text="Direction & Starting Pos", bg=BACKGROUND_COLOR, fg=FOREGROUND_COLOR).pack()
-
-num_label = tk.Label(left_frame, text="Number of Attendees:", bg=BACKGROUND_COLOR, fg=FOREGROUND_COLOR)
-num_label.pack(pady=5)
-
-num_people_entry = tk.Entry(left_frame, bg=HIGHLIGHT_COLOR, fg=FOREGROUND_COLOR, insertbackground=FOREGROUND_COLOR)
-num_people_entry.pack(pady=5)
-
-sheet_label = tk.Label(left_frame, text="Sheet Name:", bg=BACKGROUND_COLOR, fg=FOREGROUND_COLOR)
-sheet_label.pack(pady=5)
-
-sheet_name_entry = tk.Entry(left_frame, bg=HIGHLIGHT_COLOR, fg=FOREGROUND_COLOR, insertbackground=FOREGROUND_COLOR)
-sheet_name_entry.pack(pady=5)
-
-start_button = tk.Button(
-    left_frame,
-    text="Generate Movies",
-    command=on_start,
-    bg=BUTTON_COLOR,
-    fg=FOREGROUND_COLOR,
-    activebackground=HIGHLIGHT_COLOR
-)
-start_button.pack(pady=5)
-
-update_button = tk.Button(
-    left_frame,
-    text="Update URL's",
-    command=on_update_sheets,
-    bg=BUTTON_COLOR,
-    fg=FOREGROUND_COLOR,
-    activebackground=HIGHLIGHT_COLOR
-)
-update_button.pack(pady=5)
-
-root.bind('<Return>', on_start)
-center_window(root)
-root.mainloop()
+if __name__ == "__main__":
+    main()
