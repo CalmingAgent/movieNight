@@ -7,10 +7,12 @@
 #   to weight the score further
 # - Get Metadata from movies: year, genre, mpaa rating, number of votes on ratings,
 #   IMdb, rotten tomatoes, and metacritic rating, trend score
-
+# - Need to disern what model to use, use a residal plot to disern if there is a good fit.
+# - Could use R^2 to get the percentage to try to minamize this.
+import random
 def get_prob(movie_title: str) -> float:
     # compute probability 0 – 1
-    return 1
+    return float(random.randint(0,100)/100)
 
 
 

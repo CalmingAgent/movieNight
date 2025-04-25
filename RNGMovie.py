@@ -1,133 +1,244 @@
-# movie_night_qt.py
 from __future__ import annotations
-import os, re, json, random, subprocess, datetime, pickle, importlib
+
+import datetime
+import importlib
+import json
+import os
+import random
+import re
+import subprocess
+import sys
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional, Tuple
 
 import openpyxl
 import requests
 from dotenv import load_dotenv
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
 from difflib import get_close_matches
 
-from PySide6.QtCore    import Qt, QUrl, Slot
-from PySide6.QtGui     import QAction, QIcon, QPalette, QColor, QDesktopServices
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QListWidget, QListWidgetItem, QLabel, QStackedWidget, QPushButton,
-    QLineEdit, QSplitter, QScrollArea, QTableWidget, QTableWidgetItem,
-    QDialog, QCheckBox, QDialogButtonBox, QMessageBox
-)
+import qtawesome as qta
 
-# ───────────────────────── configuration ──────────────────────────
-BASE_DIR          = Path(__file__).resolve().parent
-ENV_PATH          = BASE_DIR / "secret.env"
-LOG_FILE          = BASE_DIR / "trailer_debug.log"
-auto_update_script= BASE_DIR / "autoUpdate.py"
+try:
+    from PySide6.QtCore import Qt, QUrl, QSize, Slot
+    from PySide6.QtGui import QAction, QIcon, QColor, QPalette, QDesktopServices, QPixmap, QPainter, QFont, QColor   
+    from PySide6.QtWidgets import (
+        QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+        QListWidget, QListWidgetItem, QLabel, QStackedWidget, QPushButton,
+        QLineEdit, QSplitter, QScrollArea, QTableWidget, QTableWidgetItem,
+        QDialog, QCheckBox, QDialogButtonBox, QMessageBox, QGraphicsDropShadowEffect
+    )
+except ModuleNotFoundError as exc:
+    sys.stderr.write(
+        "PySide6 is not installed. GUI will not run.\n"
+        "Install with:  pip install PySide6\n"
+    )
+    raise exc
 
-TRAILERS_DIR = BASE_DIR / "Video_Trailers"
-GHIB_FILE    = BASE_DIR / "ghib.xlsx"
-UNDER_REVIEW_FILE = BASE_DIR / "underReviewURLs.json"
 
-ICON = lambda n: QIcon(str(BASE_DIR / "icons" / f"{n}.svg"))
-ACCENT = "#3b82f6"
+# ────────────────────────── Configuration ──────────────────────────
+BASE_DIR = Path(__file__).resolve().parent
 
-# ───────────────────────── environment ────────────────────────────
+# file / folder paths
+ENV_PATH            = BASE_DIR / "secret.env"
+TRAILER_FOLDER      = BASE_DIR / "Video_Trailers"
+NUMBERS_FOLDER      = BASE_DIR / "Numbers"
+GHIBLI_SHEET_PATH   = BASE_DIR / "ghib.xlsx"
+UNDER_REVIEW_PATH   = BASE_DIR / "underReviewURLs.json"
+SERVICE_ACCOUNT_KEY = BASE_DIR / "service_secret.json"         # not used directly here
+CLIENT_SECRET_PATH  = BASE_DIR / "client_secret.json"
+USER_TOKEN_PATH     = BASE_DIR / "youtube_token.pickle"
+LOG_PATH            = BASE_DIR / "trailer_debug.log"
+AUTO_UPDATE_SCRIPT  = BASE_DIR / "autoUpdate.py"
+
+# constants
+ICON                = lambda name: QIcon(str(BASE_DIR / "icons" / f"{name}.svg"))
+ACCENT_COLOR        = "#3b82f6"
+YOUTUBE_SEARCH_URL  = "https://www.googleapis.com/youtube/v3/search"
+DRIVE_SCOPES        = ["https://www.googleapis.com/auth/drive.readonly"]
+YOUTUBE_SCOPES      = ["https://www.googleapis.com/auth/youtube"]
+
+# env vars
 load_dotenv(ENV_PATH)
 SPREADSHEET_ID  = os.getenv("SPREADSHEET_ID")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 if not SPREADSHEET_ID or not YOUTUBE_API_KEY:
-    raise EnvironmentError("Missing SPREADSHEET_ID or YOUTUBE_API_KEY in env")
+    raise EnvironmentError("Missing SPREADSHEET_ID or YOUTUBE_API_KEY in .env")
 
-# ───────────────────────── palette helper ─────────────────────────
-def apply_dark_palette(app: QApplication) -> None:
-    app.setStyle("Fusion")
-    p = QPalette()
-    p.setColor(QPalette.Window,        QColor("#202124"))
-    p.setColor(QPalette.WindowText,    Qt.white)
-    p.setColor(QPalette.Base,          QColor("#2b2c2e"))
-    p.setColor(QPalette.AlternateBase, QColor("#323336"))
-    p.setColor(QPalette.Button,        QColor("#2d2e30"))
-    p.setColor(QPalette.ButtonText,    Qt.white)
-    p.setColor(QPalette.Text,          Qt.white)
-    p.setColor(QPalette.Link,          QColor(ACCENT))
-    p.setColor(QPalette.Highlight,     QColor(ACCENT))
-    p.setColor(QPalette.HighlightedText, Qt.white)
-    app.setPalette(p)
 
-# ───────────────────────── small utils ────────────────────────────
+# ────────────────────────── Logging helper ─────────────────────────
 def log_debug(message: str) -> None:
     """
-    Log debug messages to file with a timestamp.
+    Append a timestamped debug line to LOG_PATH.
+
+    Uses Path.write_text(..., append=True) when available (3.12+),
+    otherwise falls back to explicit 'a' mode open – so it never crashes.
     """
-    timestamp = datetime.datetime.now().isoformat(timespec='seconds')
-    with open(LOG_FILE, "a", encoding="utf-8") as log_file:
-        log_file.write(f"[{timestamp}] {message}\n")
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.datetime.now().isoformat(timespec="seconds")
+    log_line = f"[{timestamp}] {message}\n"
 
-
-def normalize(s:str)->str: return re.sub(r'[^a-z0-9]','',s.lower().strip())
-
-def fuzzy_search(t:str, cand:List[str], c=0.8)->Optional[str]:
-    m=get_close_matches(t,cand,1,c);return m[0] if m else None
-
-def movie_prob(title:str)->float:
-    try: return float(importlib.import_module("probability").get_prob(title))
-    except Exception: return 0.0
-
-# ───────────────────────── trailer lookup ─────────────────────────
-YOUTUBE_SEARCH_URL="https://www.googleapis.com/youtube/v3/search"
-def youtube_api_search(q:str)->Optional[tuple[str,str]]:
     try:
-        r=requests.get(YOUTUBE_SEARCH_URL,params={
-            "part":"snippet","q":q,"key":YOUTUBE_API_KEY,
-            "videoDuration":"short","maxResults":1,"type":"video"})
-        j=r.json()
-        if j.get("items"):
-            vid=j["items"][0]["id"]["videoId"]
-            return f"https://www.youtube.com/watch?v={vid}", j["items"][0]["snippet"]["title"]
-    except Exception as e: log_debug(f"YT search err: {e}")
-    return None
+        # Python ≥ 3.12
+        LOG_PATH.write_text(log_line, encoding="utf-8", append=True)  # type: ignore[arg-type]
+    except TypeError:
+        # Older Python – no 'append' kwarg
+        with LOG_PATH.open("a", encoding="utf-8") as f:
+            f.write(log_line)
 
-def locate_trailer(sheet:str,title:str)->tuple[Optional[str],str,Optional[str]]:
-    urls_file=TRAILERS_DIR/f"{re.sub(r'\\s+','',sheet)}Urls.json"
-    if urls_file.exists():
-        data=json.loads(urls_file.read_text(encoding="utf-8"))
-        norm={normalize(k):v for k,v in data.items()}
-        key=normalize(title)
-        url=norm.get(key) or norm.get(fuzzy_search(key,list(norm)) or '')
-        if url: return url,"json",None
-    res=youtube_api_search(title+" official trailer")
-    return (res[0],"youtube",res[1]) if res else (None,"",None)
+# ────────────────────────── Tiny utilities ─────────────────────────
+def normalize(text: str) -> str:
+    """Lower-case, strip, and drop non-alphanumerics (for fuzzy keys)."""
+    return re.sub(r"[^a-z0-9]", "", text.lower().strip())
 
-def youtube_api_search(query: str) -> Optional[tuple]:
+
+def fuzzy_match(target: str, candidates: List[str], cutoff: float = 0.8) -> Optional[str]:
+    """Return best fuzzy match or None."""
+    matches = get_close_matches(target, candidates, n=1, cutoff=cutoff)
+    return matches[0] if matches else None
+
+
+def movie_probability(title: str) -> float:
+    """Pull probability from a separate `probability.py` (if present)."""
+    try:
+        return float(importlib.import_module("probability").get_prob(title))
+    except Exception:
+        return 0.0
+    
+def make_number_pixmap(number: int,
+                       size: int = 96,
+                       fg_color: str = "#ffffff",
+                       bg_color: str = "#1f1f1f",
+                       border_color: str = "#3b82f6") -> QPixmap:
+
+    pixmap = QPixmap(size, size)
+    pixmap.fill(QColor(bg_color))
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    # draw border square
+    pen = painter.pen()
+    pen.setWidth(4)
+    pen.setColor(QColor(border_color))
+    painter.setPen(pen)
+    painter.drawRoundedRect(2, 2, size - 4, size - 4, 10, 10)
+
+    # draw number
+    font = QFont("Arial", int(size * 0.55), QFont.Bold)
+    painter.setFont(font)
+    painter.setPen(QColor(fg_color))
+    painter.drawText(pixmap.rect(), Qt.AlignCenter, str(number))
+    painter.end()
+
+    return pixmap
+# ───────────────────────── trailer-report helper ─────────────────────────
+def report_trailer(movie_name: str, youtube_url: str | None) -> None:
     """
-    If the user picks a sheet and we want a fallback for a single trailer at runtime
-    (this is separate from the big autoUpdate job).
+    Add/overwrite an entry in underReviewURLs.json and pop a confirmation.
+
+    JSON is written pretty-printed (indented, one key per line) so it’s easy
+    to read or edit by hand.
     """
+    # 1) make sure the file exists
+    if not UNDER_REVIEW_PATH.exists():
+        UNDER_REVIEW_PATH.write_text("{}", encoding="utf-8")
+
+    # 2) read existing contents (gracefully handle bad JSON)
+    try:
+        data: dict[str, str] = json.loads(UNDER_REVIEW_PATH.read_text("utf-8"))
+    except json.JSONDecodeError:
+        data = {}
+
+    # 3) update / set the entry
+    data[movie_name] = youtube_url or ""
+
+    # 4) write it back – pretty JSON, Unix newlines, trailing newline
+    UNDER_REVIEW_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    # 5) log and notify
+    log_debug(f"[REPORT] Marked “{movie_name}” → {youtube_url} as under review.")
+    QMessageBox.information(
+        None,
+        "Trailer reported",
+        f"Marked “{movie_name}” for manual review."
+    )
+
+# ────────────────────────── YouTube helpers ────────────────────────
+def search_youtube_api(query: str) -> Optional[Tuple[str, str]]:
+    """Return (url, video_title) for first short video result or None."""
     params = {
         "part": "snippet",
         "q": query,
         "key": YOUTUBE_API_KEY,
         "videoDuration": "short",
         "maxResults": 1,
-        "type": "video"
+        "type": "video",
     }
     try:
-        response = requests.get(YOUTUBE_SEARCH_URL, params=params)
+        response = requests.get(YOUTUBE_SEARCH_URL, params=params, timeout=10)
         data = response.json()
-        if "items" in data and data["items"]:
-            video_id = data["items"][0]["id"]["videoId"]
-            video_title = data["items"][0]["snippet"]["title"]
-            return f"https://www.youtube.com/watch?v={video_id}", video_title
-    except Exception as e:
-        log_debug(f"[ERROR] YouTube API search failed: {e}")
+        if data.get("items"):
+            first = data["items"][0]
+            video_id = first["id"]["videoId"]
+            title = first["snippet"]["title"]
+            return f"https://www.youtube.com/watch?v={video_id}", title
+    except Exception as exc:
+        log_debug(f"YouTube search error: {exc}")
     return None
 
 
+def locate_trailer(work_sheet: str, movie_title: str) -> Tuple[Optional[str], str, Optional[str]]:
+    """
+    Try local JSON first, then YouTube API.
+    Returns (url, source, api_title) where source is 'json' or 'youtube'.
+    """
+    json_name = re.sub(r"\s+", "", work_sheet)
+    urls_path = TRAILER_FOLDER / f"{json_name}Urls.json"
+
+    if urls_path.exists():
+        data = json.loads(urls_path.read_text(encoding="utf-8"))
+        normalized = {normalize(k): v for k, v in data.items()}
+        key = normalize(movie_title)
+        url = normalized.get(key) or normalized.get(fuzzy_match(key, list(normalized)) or "")
+        if url:
+            return url, "json", None
+
+    # fallback: YouTube
+    api_result = search_youtube_api(f"{movie_title} official trailer")
+    if api_result:
+        url, api_title = api_result
+        return url, "youtube", api_title
+
+    return None, "", None
+
+
+# ──────────────────────── OAuth & playlist helpers ─────────────────
+def get_youtube_service():
+    """Return cached or freshly-authenticated youtube client."""
+    creds = None
+    if USER_TOKEN_PATH.exists():
+        creds = pickle.loads(USER_TOKEN_PATH.read_bytes())
+
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_PATH), YOUTUBE_SCOPES)
+            creds = flow.run_local_server(port=0)
+        USER_TOKEN_PATH.write_bytes(pickle.dumps(creds))
+
+    return build("youtube", "v3", credentials=creds)
+
+
 def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
-    """
-    Create an unlisted YouTube playlist named 'title' and populate it with video_ids.
-    Return the playlist URL or None on failure.
-    """
+    """Create an unlisted playlist populated with `video_ids`; return playlist URL or None."""
     try:
         youtube = get_youtube_service()
         playlist = youtube.playlists().insert(
@@ -135,9 +246,9 @@ def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
             body={
                 "snippet": {
                     "title": title,
-                    "description": "Auto-generated playlist by Movie Picker App",
+                    "description": "Auto-generated by Movie Night",
                 },
-                "status": {"privacyStatus": "unlisted"}
+                "status": {"privacyStatus": "unlisted"},
             },
         ).execute()
 
@@ -148,132 +259,394 @@ def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
                 body={
                     "snippet": {
                         "playlistId": playlist_id,
-                        "resourceId": {
-                            "kind": "youtube#video",
-                            "videoId": vid
-                        }
+                        "resourceId": {"kind": "youtube#video", "videoId": vid},
                     }
                 },
             ).execute()
 
         return f"https://www.youtube.com/playlist?list={playlist_id}"
-    except Exception as e:
-        log_debug(f"[ERROR] YouTube playlist creation failed: {e}")
-    return None
+    except Exception as exc:
+        log_debug(f"YouTube playlist creation failed: {exc}")
+        return None
 
-# ───────────────────────── GUI pieces ─────────────────────────────
+
+# ────────────────────────── GUI widgets ───────────────────────────
 class ReportDialog(QDialog):
-    def __init__(self,parent,movies):
-        super().__init__(parent); self.setWindowTitle("Report trailers")
-        lay=QVBoxLayout(self); self.box=[]
-        for m in movies:
-            b=QCheckBox(m); lay.addWidget(b); self.box.append(b)
-        btns=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
-        lay.addWidget(btns); btns.accepted.connect(self.accept); btns.rejected.connect(self.reject)
-    def selected(self): return [b.text() for b in self.box if b.isChecked()]
+    """Checkbox list of movies to mark as ‘bad trailer’."""
+
+    def __init__(self, parent: QWidget, movies: List[str]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Report trailers")
+
+        layout = QVBoxLayout(self)
+        self._boxes: List[QCheckBox] = [QCheckBox(title) for title in movies]
+        for box in self._boxes:
+            layout.addWidget(box)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def selected_movies(self) -> List[str]:
+        return [box.text() for box in self._boxes if box.isChecked()]
+
 
 class PickerPage(QWidget):
-    def __init__(self,parent:"MainWindow"):
-        super().__init__(); self.win=parent
-        outer=QHBoxLayout(self)
+    """Main picker UI (left controls, center movie list, right stats)."""
 
-        # left controls
-        ctrl=QVBoxLayout()
-        self.att_in,QInt=QLineEdit(),QLineEdit()
-        self.att_in.setPlaceholderText("# attendees")
-        self.sheet_in=QLineEdit(); self.sheet_in.setPlaceholderText("Sheet name")
-        gen=QPushButton("Generate Movies"); gen.clicked.connect(parent.generate_movies)
-        upd=QPushButton("Update URLs");    upd.clicked.connect(parent.update_urls)
-        for w in (self.att_in,self.sheet_in,gen,upd): ctrl.addWidget(w)
-        ctrl.addStretch(); outer.addLayout(ctrl)
+    DIRECTIONS = ["Clockwise", "Counter-Clockwise"]
 
-        # middle list
-        self.scroll=QScrollArea(); self.scroll.setWidgetResizable(True)
-        self.container=QWidget(); self.vlay=QVBoxLayout(self.container); self.vlay.setAlignment(Qt.AlignTop)
-        self.scroll.setWidget(self.container); outer.addWidget(self.scroll,2)
+    def __init__(self, main_window: "MainWindow") -> None:
+        super().__init__()
 
-        # right side
-        rlay=QVBoxLayout()
-        self.stats_lbl=QLabel("",alignment=Qt.AlignCenter)
-        self.report_btn=QPushButton("Report Trailers"); self.report_btn.setEnabled(False)
-        self.report_btn.clicked.connect(self.report_trailers)
-        rlay.addWidget(self.stats_lbl); rlay.addWidget(self.report_btn); rlay.addStretch()
-        outer.addLayout(rlay)
+        self.main_window = main_window
+        self._build_layout()
+        self._connect_signals()
 
-    # called by MainWindow
-    def populate(self,movies,tr_lookup):
-        while (item:=self.vlay.takeAt(0)): item.widget().deleteLater()
-        self._movies,self._lookup=movies,tr_lookup
-        for m in movies:
-            url=tr_lookup.get(m,""); p=f"{movie_prob(m):.02f}"
+        # show direction/number only after first Generate Movies
+        self.direction_label.hide()
+        self.number_label.hide()
+
+    # ───────────── layout helpers ─────────────
+    def _build_layout(self) -> None:
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(20)        
+
+        # left: controls
+        control_layout = QVBoxLayout()
+        self.attendee_input = QLineEdit(placeholderText="# attendees")
+        self.sheet_input = QLineEdit(placeholderText="Sheet name")
+
+        self.generate_button = QPushButton("Generate Movies")
+        self.update_urls_button = QPushButton("Update URLs")
+
+        for widget in (self.attendee_input, self.sheet_input,
+                       self.generate_button, self.update_urls_button):
+            control_layout.addWidget(widget)
+        control_layout.addStretch()
+        outer.addLayout(control_layout)
+
+        # centre: scrollable movie list
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        card_frame = QWidget()
+        card_frame.setObjectName("MovieCard")
+        card_layout = QVBoxLayout(card_frame)
+        card_layout.setContentsMargins(12, 12, 12, 12)
+        # movie list lives inside the card
+        self.movie_list_container = QWidget()
+        self.movie_list_layout = QVBoxLayout(self.movie_list_container)
+        self.movie_list_layout.setAlignment(Qt.AlignTop)
+        card_layout.addWidget(self.movie_list_container)
+        card_frame.setStyleSheet(
+            "background:#272727; border-radius:12px;"
+        )
+        self.scroll_area.setWidget(self.movie_list_container)
+        outer.addWidget(self.scroll_area, 2)
+
+        # right: stats & direction
+        right_layout = QVBoxLayout()
+
+        self.stats_label = QLabel(alignment=Qt.AlignCenter)
+        right_layout.addWidget(self.stats_label)
+
+        # direction + number tiles
+        self.direction_label = QLabel("", alignment=Qt.AlignCenter, objectName="DirectionTile")
+        self.direction_label.setFixedSize(112, 112)
+        self.direction_label.setStyleSheet("border: 2px solid #555; border-radius: 8px;")
+        right_layout.addWidget(self.direction_label, alignment=Qt.AlignHCenter)
+
+        self.number_label = QLabel("", alignment=Qt.AlignCenter, objectName="NumberTile")   
+        self.number_label.setFixedSize(112, 112)
+        self.number_label.setStyleSheet("border: 2px solid #555; border-radius: 8px;")
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(12)
+        shadow.setColor(QColor(0, 0, 0, 160))   # semi-transparent black
+        shadow.setOffset(0, 2)
+        self.number_label.setGraphicsEffect(shadow)
+
+        shadow2 = QGraphicsDropShadowEffect(self)
+        shadow2.setBlurRadius(12)
+        shadow2.setColor(QColor(0, 0, 0, 160))
+        shadow2.setOffset(0, 2)
+        self.direction_label.setGraphicsEffect(shadow2)
+        right_layout.addWidget(self.number_label, alignment=Qt.AlignHCenter)
+
+        self.report_button = QPushButton("Report Trailers")
+        self.report_button.setEnabled(False)
+        right_layout.addWidget(self.report_button)
+        right_layout.addStretch()
+
+        outer.addLayout(right_layout)
+
+    def _connect_signals(self) -> None:
+        self.generate_button.clicked.connect(self.main_window.generate_movies)
+        self.update_urls_button.clicked.connect(self.main_window.update_urls)
+        self.report_button.clicked.connect(self._open_report_dialog)
+
+        # pressing Enter in either LineEdit triggers generate
+        self.attendee_input.returnPressed.connect(self.main_window.generate_movies)
+        self.sheet_input.returnPressed.connect(self.main_window.generate_movies)
+
+    # ───────────── public API ─────────────
+    def display_movies(self, movies: List[str], trailer_lookup: dict[str, str]) -> None:
+        # clear old widgets
+        while (item := self.movie_list_layout.takeAt(0)):
+            item.widget().deleteLater()
+
+        self.current_movies = movies
+        self.current_lookup = trailer_lookup
+
+        for title in movies:
+            url = trailer_lookup.get(title, "")
+            prob_val = movie_probability(title)
+            prob_str = f"{prob_val:.2f}"
+
+            # probability colour tiers
+            if   prob_val >= 0.7: pill_bg = "#2ecc71"      # green
+            elif prob_val >= 0.4: pill_bg = "#f1c40f"      # yellow
+            else               : pill_bg = ACCENT_COLOR    # blue
+
+            # probability pill as its own QLabel
+            pill = QLabel(prob_str)
+            pill.setObjectName("")          # no id
+            pill.setProperty("class", "prob-pill")
+            pill.setStyleSheet(f"background:{pill_bg};")
+
+            # title label (link if URL)
             if url:
-                col="#ffa500" if "youtube" in url else "#fff"
-                html=f'<a href="{url}" style="color:{col};text-decoration:none">{m}</a> <span style="color:#aaa">({p})</span>'
-                lbl=QLabel(html); lbl.setTextFormat(Qt.RichText)
-                lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
-                lbl.setOpenExternalLinks(False)
-                lbl.linkActivated.connect(lambda _,link=url:QDesktopServices.openUrl(QUrl(link)))
+                title_html = f'<a href="{url}" style="text-decoration:none">{title}</a>'
             else:
-                lbl=QLabel(f'<span style="color:#888">{m} (no trailer)</span> <span style="color:#aaa">({p})</span>',textFormat=Qt.RichText)
-            lbl.setWordWrap(True); self.vlay.addWidget(lbl)
-        self.report_btn.setEnabled(bool(movies))
+                title_html = f"<span style='color:#888'>{title}</span>"
+            
+            title_lbl = QLabel(title_html)
+            title_lbl.setTextFormat(Qt.RichText)
+            title_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            title_lbl.setOpenExternalLinks(False)
+            title_lbl.linkActivated.connect(lambda _, link=url: QDesktopServices.openUrl(QUrl(link)))
 
+            # row container
+            row = QHBoxLayout()
+            row.addWidget(title_lbl)
+            row.addStretch()
+            row.addWidget(pill)
+
+            wrapper = QWidget()
+            wrapper.setLayout(row)
+            self.movie_list_layout.addWidget(wrapper)
+            self.movie_list_layout.setSpacing(8)
+
+        self.report_button.setEnabled(bool(movies))
+
+        # random direction + number
+        # inside PickerPage.display_movies or wherever you pick direction/number
+        direction = random.choice(self.DIRECTIONS)                    # "Clockwise" / "Counter-Clockwise"
+        icon_map = {
+            "Clockwise": "arrow-clockwise",
+            "Counter-Clockwise": "arrow-counterclockwise",
+        }
+        icon_name = icon_map[direction]                               # e.g. "arrow-right-circle"
+
+        number = random.randint(1, (int(self.attendee_input.text())))
+
+        # build pixmaps
+        icon_pixmap   = ICON(icon_name).pixmap(96, 96)                # 96×96 px (tweak size if needed)
+        number_pixmap = make_number_pixmap(
+                        number,
+                        bg_color="rgba(59,130,246,0.25)",   # 25 % opacity accent
+                        fg_color="#ffffff"
+                        ) 
+
+        # push to labels
+        self.direction_label.setPixmap(icon_pixmap)
+        self.number_label.setPixmap(number_pixmap)
+
+        # optional: let Qt scale when label is resized
+        self.direction_label.setScaledContents(True)
+        self.number_label.setScaledContents(True)
+
+        self.direction_label.show()
+        self.number_label.show()
+
+    # ───────────── internal slots ─────────────
     @Slot()
-    def report_trailers(self):
-        dlg=ReportDialog(self,self._movies)
-        if dlg.exec()==QDialog.Accepted:
-            for m in dlg.selected():
-                report_trailer(m,self._lookup.get(m,""))
-            QMessageBox.information(self,"Reported","Thanks for the feedback!")
+    def _open_report_dialog(self) -> None:
+        dialog = ReportDialog(self, self.current_movies)
+        if dialog.exec() == QDialog.Accepted:
+            for title in dialog.selected_movies():
+                report_trailer(title, self.current_lookup.get(title, ""))
+            QMessageBox.information(self, "Reported", "Thanks for the feedback!")
+
 
 class StatsPage(QWidget):
-    def __init__(self): super().__init__(); self.table=QTableWidget(0,3)
-    def load_stats(self,data): ...
+    """Placeholder stats page."""
+    def __init__(self) -> None:
+        super().__init__()
+        self.table = QTableWidget(0, 3)  # TODO: implement real stats
 
+
+# ────────────────────────── Main Window ───────────────────────────
 class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__(); self.setWindowTitle("Movie Night"); self.resize(960,600)
-        self.picker, self.stats = PickerPage(self), StatsPage()
-        self.nav=QListWidget(); self.nav.setFixedWidth(170)
-        self.pages=QStackedWidget()
-        for name,ico,widget in (("Picker","grid",self.picker),("Stats","bar",self.stats)):
-            self.nav.addItem(QListWidgetItem(ICON(ico),f"  {name}")); self.pages.addWidget(widget)
-        self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
-        sp=QSplitter(); sp.addWidget(self.nav); sp.addWidget(self.pages); sp.setStretchFactor(1,1)
-        self.setCentralWidget(sp)
-        tb=self.addToolBar("Main")
-        act=QAction(ICON("refresh"),"Re-roll",self); act.setShortcut("Ctrl+R"); act.triggered.connect(self.generate_movies); tb.addAction(act)
 
-    # ─── buttons ───────────────────────────────────────────────
-    @Slot() 
-    def update_urls(self): subprocess.run(["python",auto_update_script],check=False)
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Movie Night")
+        self.resize(960, 600)
+
+        self.picker_page = PickerPage(self)
+        self.stats_page = StatsPage()
+
+        # navigation list
+        self.nav_list = QListWidget()
+        self.nav_list.setFixedWidth(170)
+        self.nav_list.addItem(QListWidgetItem(ICON("grid"), "RNJesus"))
+        row = self.nav_list.count()                # index of the item you just appended
+        item = self.nav_list.item(row - 1)         # last added item
+        item.setTextAlignment(Qt.AlignHCenter)
+        self.nav_list.addItem(QListWidgetItem(ICON("bar-chart-line"), "  Movie Stats"))
+        row = self.nav_list.count()                # index of the item you just appended
+        item = self.nav_list.item(row - 1)         # last added item
+        item.setTextAlignment(Qt.AlignHCenter)
+
+
+        # stacked pages
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self.picker_page)
+        self.pages.addWidget(self.stats_page)
+
+        self.nav_list.currentRowChanged.connect(self.pages.setCurrentIndex)
+
+        splitter = QSplitter()
+        splitter.addWidget(self.nav_list)
+        splitter.addWidget(self.pages)
+        splitter.setStretchFactor(1, 1)
+        self.setCentralWidget(splitter)
+
+        # toolbar
+        toolbar = self.addToolBar("Main")
+        reroll_action = QAction(ICON("refresh"), "Re-roll", self)
+        reroll_action.setShortcut("Ctrl+R")
+        reroll_action.triggered.connect(self.generate_movies)
+        toolbar.addAction(reroll_action)
+
+    # ─────────────────── public slots ───────────────────
+    @Slot()
+    def update_urls(self) -> None:
+        subprocess.run(["python", AUTO_UPDATE_SCRIPT], check=False)
 
     @Slot()
-    def generate_movies(self):
-        try: n=int(self.picker.att_in.text().strip()); assert n>0
-        except Exception: return QMessageBox.warning(self,"Error","Enter a positive attendee count.")
-        sheet_name=self.picker.sheet_in.text().strip()
-        if not sheet_name: return QMessageBox.warning(self,"Error","Sheet name?")
-        if not GHIB_FILE.exists(): return QMessageBox.warning(self,"Error","Run Update URLs first.")
+    def generate_movies(self) -> None:
+        """Validate input, pick movies, build playlist, update UI."""
+        try:
+            attendee_count = int(self.picker_page.attendee_input.text().strip())
+            if attendee_count <= 0:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "Error", "Enter a positive attendee count.")
+            return
 
-        wb=openpyxl.load_workbook(GHIB_FILE,read_only=True)
-        sheets={normalize(s):s for s in wb.sheetnames}
-        chosen=sheets.get(normalize(sheet_name)) or sheets.get(fuzzy_search(normalize(sheet_name),list(sheets)))
-        if not chosen: return QMessageBox.warning(self,"Error","Sheet not found.")
-        movies=[r[0] for r in wb[chosen].iter_rows(min_row=1,max_col=1,values_only=True) if r[0]]
-        if n+1>len(movies): return QMessageBox.warning(self,"Error","Not enough movies.")
-        pick=random.sample(movies,n+1)
-        lookup={m:locate_trailer(chosen,m)[0] for m in pick}
+        sheet_name_raw = self.picker_page.sheet_input.text().strip()
+        if not sheet_name_raw:
+            QMessageBox.warning(self, "Error", "Sheet name?")
+            return
+        if not GHIBLI_SHEET_PATH.exists():
+            QMessageBox.warning(self, "Error", "Run Update URLs first.")
+            return
 
-        # build playlist
-        ids=[u.split("v=")[-1].split("&")[0] for u in lookup.values() if u and "watch?v=" in u]
-        if ids:
-            url=create_youtube_playlist(f"Movie Night {datetime.date.today()}",ids)
-            if url: QDesktopServices.openUrl(QUrl(url))
-        self.picker.populate(pick,lookup)
-# ───────────────────────── entry - point ─────────────────────────
-def main():
-    app=QApplication([]); apply_dark_palette(app)
-    MainWindow().show(); app.exec()
+        workbook = openpyxl.load_workbook(GHIBLI_SHEET_PATH, read_only=True)
+        sheet_map = {normalize(name): name for name in workbook.sheetnames}
+        chosen_sheet = (
+            sheet_map.get(normalize(sheet_name_raw))
+            or sheet_map.get(fuzzy_match(normalize(sheet_name_raw), list(sheet_map)))
+        )
+        if not chosen_sheet:
+            QMessageBox.warning(self, "Error", "Sheet not found.")
+            return
 
-if __name__=="__main__": main()
+        movie_titles = [
+            row[0] for row in workbook[chosen_sheet].iter_rows(min_row=1, max_col=1, values_only=True)
+            if row[0]
+        ]
+        if attendee_count + 1 > len(movie_titles):
+            QMessageBox.warning(self, "Error", "Not enough movies.")
+            return
+
+        chosen_movies = random.sample(movie_titles, attendee_count + 1)
+        trailer_lookup = {
+            title: locate_trailer(chosen_sheet, title)[0] for title in chosen_movies
+        }
+
+        # optional: build YouTube playlist from found trailers
+        video_ids = [
+            url.split("v=")[-1].split("&")[0]
+            for url in trailer_lookup.values()
+            if url and "watch?v=" in url
+        ]
+        if video_ids:
+            playlist_url = create_youtube_playlist(
+                f"Movie Night {datetime.date.today()}", video_ids
+            )
+            if playlist_url:
+                QDesktopServices.openUrl(QUrl(playlist_url))
+
+        # push to UI
+        self.picker_page.display_movies(chosen_movies, trailer_lookup)
+
+
+# ────────────────────────── Dark theme ────────────────────────────
+def apply_dark_palette(app: QApplication) -> None:
+    """Dark Fusion palette with brand accent."""
+    palette = QPalette()
+    palette.setColor(QPalette.Window, QColor("#202124"))
+    palette.setColor(QPalette.WindowText, Qt.white)
+    palette.setColor(QPalette.Base, QColor("#2b2c2e"))
+    palette.setColor(QPalette.AlternateBase, QColor("#323336"))
+    palette.setColor(QPalette.Button, QColor("#2d2e30"))
+    palette.setColor(QPalette.ButtonText, Qt.white)
+    palette.setColor(QPalette.Text, Qt.white)
+    palette.setColor(QPalette.Link, QColor(ACCENT_COLOR))
+    palette.setColor(QPalette.Highlight, QColor(ACCENT_COLOR))
+    palette.setColor(QPalette.HighlightedText, Qt.white)
+    app.setStyle("Fusion")
+    app.setPalette(palette)
+
+
+# ────────────────────────── Entry point ───────────────────────────
+def main() -> None:
+    app = QApplication([])
+    apply_dark_palette(app)
+    app.setStyleSheet("""
+    /* round the square tiles and give them a shadow */
+    QLabel#DirectionTile, QLabel#NumberTile {
+        border        : 2px solid #555;
+        border-radius : 10px;
+        background    : #1f1f1f;
+        padding       : 4px;
+        box-shadow    : 0 2px 6px rgba(0,0,0,.45);
+    }
+
+    /* nicer pill for probability */
+    QLabel.prob-pill {
+        color         : #111;
+        border-radius : 4px;
+        padding       : 1px 5px;
+        font-size     : 11px;
+    }
+
+    /* movie link colour */
+    a { color: #F8CC6A; }
+
+    /* nav hover + selected tint */
+    QListWidget::item:hover { background : #333; }
+    QListWidget::item:selected { background : #444; }
+
+    QPushButton:hover { background : #404040; }
+    """)
+    MainWindow().show()
+    app.exec()
+
+
+if __name__ == "__main__":
+    main()
