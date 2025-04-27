@@ -20,16 +20,18 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from difflib import get_close_matches
 
-import qtawesome as qta
+import urllib.parse
+
 
 try:
-    from PySide6.QtCore import Qt, QUrl, QSize, Slot
+    from PySide6.QtCore import Qt, QUrl, QSize, Slot, QPropertyAnimation
     from PySide6.QtGui import QAction, QIcon, QColor, QPalette, QDesktopServices, QPixmap, QPainter, QFont, QColor   
     from PySide6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QListWidget, QListWidgetItem, QLabel, QStackedWidget, QPushButton,
         QLineEdit, QSplitter, QScrollArea, QTableWidget, QTableWidgetItem,
-        QDialog, QCheckBox, QDialogButtonBox, QMessageBox, QGraphicsDropShadowEffect
+        QDialog, QCheckBox, QDialogButtonBox, QMessageBox, QGraphicsDropShadowEffect, QSizePolicy,
+        QGraphicsOpacityEffect 
     )
 except ModuleNotFoundError as exc:
     sys.stderr.write(
@@ -37,7 +39,6 @@ except ModuleNotFoundError as exc:
         "Install with:  pip install PySide6\n"
     )
     raise exc
-
 
 # ────────────────────────── Configuration ──────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
@@ -111,11 +112,10 @@ def movie_probability(title: str) -> float:
 def make_number_pixmap(number: int,
                        size: int = 96,
                        fg_color: str = "#ffffff",
-                       bg_color: str = "#1f1f1f",
                        border_color: str = "#3b82f6") -> QPixmap:
 
     pixmap = QPixmap(size, size)
-    pixmap.fill(QColor(bg_color))
+    pixmap.fill(Qt.transparent)
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
@@ -135,6 +135,20 @@ def make_number_pixmap(number: int,
     painter.end()
 
     return pixmap
+
+def resizeEvent(self, event):
+    super().resizeEvent(event)          # default processing
+
+    if not self.direction_label.pixmap():
+        return  # nothing to scale yet
+
+    # regenerate pixmaps at new size
+    side = min(self.direction_label.width(), self.direction_label.height())
+    arrow_pix = self._current_arrow_icon.pixmap(side, side)
+    num_pix   = make_number_pixmap(self._current_number, size=side)
+
+    self.direction_label.setPixmap(arrow_pix)
+    self.number_label.setPixmap(num_pix)
 # ───────────────────────── trailer-report helper ─────────────────────────
 def report_trailer(movie_name: str, youtube_url: str | None) -> None:
     """
@@ -321,6 +335,11 @@ class PickerPage(QWidget):
 
         self.generate_button = QPushButton("Generate Movies")
         self.update_urls_button = QPushButton("Update URLs")
+        
+        for b in (self.generate_button, self.update_urls_button):     # ### PATCH 6
+            b.setAutoDefault(False)
+            b.setFlat(True)     # flat = auto-raise style in Fusion
+
 
         for widget in (self.attendee_input, self.sheet_input,
                        self.generate_button, self.update_urls_button):
@@ -354,24 +373,20 @@ class PickerPage(QWidget):
 
         # direction + number tiles
         self.direction_label = QLabel("", alignment=Qt.AlignCenter, objectName="DirectionTile")
-        self.direction_label.setFixedSize(112, 112)
-        self.direction_label.setStyleSheet("border: 2px solid #555; border-radius: 8px;")
-        right_layout.addWidget(self.direction_label, alignment=Qt.AlignHCenter)
-
         self.number_label = QLabel("", alignment=Qt.AlignCenter, objectName="NumberTile")   
-        self.number_label.setFixedSize(112, 112)
-        self.number_label.setStyleSheet("border: 2px solid #555; border-radius: 8px;")
+        for lbl in (self.direction_label, self.number_label):
+            lbl.setMinimumSize(80, 80)                         # keeps them usable when tiny
+            lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            lbl.setScaledContents(True)   
+        self.direction_label.setStyleSheet("border: 2px solid #555; border-radius: 8px;")
+
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(12)
         shadow.setColor(QColor(0, 0, 0, 160))   # semi-transparent black
         shadow.setOffset(0, 2)
         self.number_label.setGraphicsEffect(shadow)
-
-        shadow2 = QGraphicsDropShadowEffect(self)
-        shadow2.setBlurRadius(12)
-        shadow2.setColor(QColor(0, 0, 0, 160))
-        shadow2.setOffset(0, 2)
-        self.direction_label.setGraphicsEffect(shadow2)
+        
+        right_layout.addWidget(self.direction_label, alignment=Qt.AlignHCenter)
         right_layout.addWidget(self.number_label, alignment=Qt.AlignHCenter)
 
         self.report_button = QPushButton("Report Trailers")
@@ -414,6 +429,14 @@ class PickerPage(QWidget):
             pill.setObjectName("")          # no id
             pill.setProperty("class", "prob-pill")
             pill.setStyleSheet(f"background:{pill_bg};")
+            
+            effect = QGraphicsOpacityEffect(pill)        # ### PATCH 5
+            pill.setGraphicsEffect(effect)
+            anim = QPropertyAnimation(effect, b"opacity", pill)
+            anim.setDuration(300)
+            anim.setStartValue(0.0)
+            anim.setEndValue(1.0)
+            anim.start(QPropertyAnimation.DeleteWhenStopped)
 
             # title label (link if URL)
             if url:
@@ -426,6 +449,8 @@ class PickerPage(QWidget):
             title_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
             title_lbl.setOpenExternalLinks(False)
             title_lbl.linkActivated.connect(lambda _, link=url: QDesktopServices.openUrl(QUrl(link)))
+            
+            title_lbl.setProperty("class", "MovieTitle")
 
             # row container
             row = QHBoxLayout()
@@ -434,9 +459,10 @@ class PickerPage(QWidget):
             row.addWidget(pill)
 
             wrapper = QWidget()
+            wrapper.setObjectName("MovieRow") 
             wrapper.setLayout(row)
             self.movie_list_layout.addWidget(wrapper)
-            self.movie_list_layout.setSpacing(8)
+        self.movie_list_layout.setSpacing(8)
 
         self.report_button.setEnabled(bool(movies))
 
@@ -450,17 +476,20 @@ class PickerPage(QWidget):
         icon_name = icon_map[direction]                               # e.g. "arrow-right-circle"
 
         number = random.randint(1, (int(self.attendee_input.text())))
-
+        label_w   = self.direction_label.width()
+        label_h   = self.direction_label.height()
+        side      = min(label_w, label_h, 124) 
         # build pixmaps
-        icon_pixmap   = ICON(icon_name).pixmap(96, 96)                # 96×96 px (tweak size if needed)
+        arrow_icon    = ICON(icon_name)
+        arrow_pix     = arrow_icon.pixmap(side,side)
         number_pixmap = make_number_pixmap(
                         number,
-                        bg_color="rgba(59,130,246,0.25)",   # 25 % opacity accent
-                        fg_color="#ffffff"
+                        size = side,
+                        fg_color="#ffffff",                     
                         ) 
 
         # push to labels
-        self.direction_label.setPixmap(icon_pixmap)
+        self.direction_label.setPixmap(arrow_pix)
         self.number_label.setPixmap(number_pixmap)
 
         # optional: let Qt scale when label is resized
@@ -469,6 +498,9 @@ class PickerPage(QWidget):
 
         self.direction_label.show()
         self.number_label.show()
+    
+        self._current_icon_name = arrow_icon   # <<< store icon
+        self._current_number     = number                                 # <<< store value
 
     # ───────────── internal slots ─────────────
     @Slot()
@@ -523,6 +555,7 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.pages)
         splitter.setStretchFactor(1, 1)
         self.setCentralWidget(splitter)
+        splitter.setHandleWidth(1)  
 
         # toolbar
         toolbar = self.addToolBar("Main")
@@ -585,12 +618,15 @@ class MainWindow(QMainWindow):
             if url and "watch?v=" in url
         ]
         if video_ids:
-            playlist_url = create_youtube_playlist(
-                f"Movie Night {datetime.date.today()}", video_ids
+            ids_csv = ",".join(video_ids)
+            title   = urllib.parse.quote_plus(f"Movie Night {datetime.date.today()}")
+            playlist_link = (
+                f"https://www.youtube.com/watch_videos"
+                f"?video_ids={ids_csv}"
+                f"&title={title}"
+                f"&feature=share"
             )
-            if playlist_url:
-                QDesktopServices.openUrl(QUrl(playlist_url))
-
+            QDesktopServices.openUrl(QUrl(playlist_link))
         # push to UI
         self.picker_page.display_movies(chosen_movies, trailer_lookup)
 
@@ -618,31 +654,33 @@ def main() -> None:
     app = QApplication([])
     apply_dark_palette(app)
     app.setStyleSheet("""
-    /* round the square tiles and give them a shadow */
+    /* ---- base typography ---- */
+    QWidget            { font-family:"Inter","Roboto","Arial"; font-size:12pt; }
+    QLabel.MovieTitle  { font-weight:600; font-size:13pt; }
+
+    /* ---- movie-row hover ---- */
+    QWidget#MovieRow:hover        { background:#303030; }
+    QWidget#MovieRow:hover a      { text-decoration:underline; }
+
+    /* ---- rounded tile gradient ---- */
     QLabel#DirectionTile, QLabel#NumberTile {
-        border        : 2px solid #555;
-        border-radius : 10px;
-        background    : #1f1f1f;
-        padding       : 4px;
-        box-shadow    : 0 2px 6px rgba(0,0,0,.45);
+        border               :2px solid transparent;
+        background           :qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #555, stop:1 #333);
+        border-radius        :10px;
     }
 
-    /* nicer pill for probability */
-    QLabel.prob-pill {
-        color         : #111;
-        border-radius : 4px;
-        padding       : 1px 5px;
-        font-size     : 11px;
-    }
+    /* ---- flat buttons (auto-raise look) ---- */
+    QPushButton          { background:transparent; border:1px solid #555; padding:3px 10px; }
+    QPushButton:hover    { background:#404040; }
 
-    /* movie link colour */
-    a { color: #F8CC6A; }
+    /* ---- slim vertical scrollbar ---- */
+    QScrollBar:vertical            { width:8px; background:transparent; }
+    QScrollBar::handle:vertical    { background:#555; border-radius:4px; }
+    QScrollBar::add-line, QScrollBar::sub-line { height:0; }
+    QScrollBar::add-page, QScrollBar::sub-page { background:transparent; }
 
-    /* nav hover + selected tint */
-    QListWidget::item:hover { background : #333; }
-    QListWidget::item:selected { background : #444; }
-
-    QPushButton:hover { background : #404040; }
+    /* ---- splitter handle invisible ---- */
+    QSplitter::handle    { background:transparent; }
     """)
     MainWindow().show()
     app.exec()
