@@ -7,6 +7,7 @@ import openpyxl
 from pathlib import Path
 from dotenv import load_dotenv
 import datetime
+from yt_dlp import YoutubeDL
 
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
@@ -187,7 +188,10 @@ def tmdb_find_trailer(movie_title: str):
         if len(matched) == 0 or len(matched) >= 3:
             log_debug(f"[TMDB] Fallback to YT => 0 or >=3 exact matches.")
             return None
-
+        
+       
+        
+            
         chosen = matched[0]
         movie_id = chosen["id"]
         log_debug(f"[TMDB] Using ID={movie_id} for '{chosen.get('title')}'")
@@ -201,13 +205,20 @@ def tmdb_find_trailer(movie_title: str):
             print("TMDB daily quota limit reached. Exiting.")
             sys.exit(1)
 
+        max_video_duraction = 50
+        youtubeLink = "https://www.youtube.com/watch?v="
         vids_data = vids_resp.json().get("results", [])
         for vid in vids_data:
-            if vid.get("site") == "YouTube" and vid.get("type") in ("Trailer", "Teaser"):
+            if vid.get("site") == "YouTube" and vid.get("type") in ("Trailer"):
                 key = vid.get("key")
                 if key:
-                    log_debug(f"[TMDB] Found YT key={key} for '{movie_title}'")
-                    return f"https://www.youtube.com/watch?v={key}"
+                    YTFullLink = youtubeLink + key
+                    if get_video_duration_sec(YTFullLink) <= max_video_duraction:
+                        log_debug(f"[TMDB] Fallback to YT, {movie_title} video too long, <=50 secs {get_video_duration_sec(matched)}")
+                        return None
+                    else:
+                        log_debug(f"[TMDB] Found YT key={key} for '{movie_title}'")
+                        return f"https://www.youtube.com/watch?v={key}"
 
         log_debug(f"[TMDB] No YT trailer in /videos => fallback to YT for '{movie_title}'")
         return None
@@ -259,7 +270,18 @@ def youtube_api_search(query: str):
     except Exception as e:
         log_debug(f"[ERROR] YouTube API error '{query}': {e}")
         return None
-
+    
+def get_video_duration_sec(video_url: str) -> int | None:
+    """Return length in seconds, or None on failure (no Google API key needed)."""
+    ydl_opts = {"quiet": True, "skip_download": True}
+    with YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(video_url, download=False)
+            return info.get("duration")
+        except Exception as exc:
+            print("yt-dlp error:", exc)
+            return None
+        
 def find_trailer_fallback_cache(movie_title: str, master_cache: dict):
     norm = normalize_title(movie_title)
     if norm in master_cache and master_cache[norm]:
