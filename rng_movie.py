@@ -22,6 +22,7 @@ from difflib import get_close_matches
 
 import urllib.parse
 
+#Gui 
 try:
     from PySide6.QtCore import Qt, QUrl, Slot, QPropertyAnimation
     from PySide6.QtGui import QAction, QIcon, QColor, QPalette, QDesktopServices, QPixmap, QPainter, QFont, QColor   
@@ -30,7 +31,7 @@ try:
         QListWidget, QListWidgetItem, QLabel, QStackedWidget, QPushButton,
         QLineEdit, QSplitter, QScrollArea, QTableWidget,
         QDialog, QCheckBox, QDialogButtonBox, QMessageBox, QGraphicsDropShadowEffect, QSizePolicy,
-        QFrame, QGridLayout, QFrame
+        QFrame, QGridLayout, QFrame,QProgressBar
     )
 except ModuleNotFoundError as exc:
     sys.stderr.write(
@@ -38,6 +39,9 @@ except ModuleNotFoundError as exc:
         "Install with:  pip install PySide6\n"
     )
     raise exc
+
+#other python scripts needed in dir
+import movie_repository
 
 
 # ────────────────────────── Configuration ──────────────────────────
@@ -69,6 +73,8 @@ YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 if not SPREADSHEET_ID or not YOUTUBE_API_KEY:
     raise EnvironmentError("Missing SPREADSHEET_ID or YOUTUBE_API_KEY in .env")
 
+#Other files like probability (incase of changing name and such)
+#-placeholder- 
 
 # ────────────────────────── Logging helper ─────────────────────────
 def log_debug(message: str) -> None:
@@ -100,15 +106,7 @@ def fuzzy_match(target: str, candidates: List[str], cutoff: float = 0.8) -> Opti
     """Return best fuzzy match or None."""
     matches = get_close_matches(target, candidates, n=1, cutoff=cutoff)
     return matches[0] if matches else None
-
-
-def movie_probability(title: str) -> float:
-    """Pull probability from a separate `probability.py` (if present)."""
-    try:
-        return float(importlib.import_module("probability").get_prob(title))
-    except Exception:
-        return 0.0
-    
+ 
 def make_number_pixmap(number: int,
                        size: int = 96,
                        fg_color: str = "#ffffff",
@@ -149,6 +147,7 @@ def resizeEvent(self, event):
 
     self.direction_label.setPixmap(arrow_pix)
     self.number_label.setPixmap(num_pix)
+    
 # ───────────────────────── trailer-report helper ─────────────────────────
 def report_trailer(movie_name: str, youtube_url: str | None) -> None:
     """
@@ -250,7 +249,6 @@ def get_youtube_service():
 
     return build("youtube", "v3", credentials=creds)
 
-
 def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
     """Create an unlisted playlist populated with `video_ids`; return playlist URL or None."""
     try:
@@ -283,7 +281,15 @@ def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
         log_debug(f"YouTube playlist creation failed: {exc}")
         return None
 
-
+# ──────────────────────── Database Calls ─────────────────
+DATABASE = movie_repository
+def movie_probability(title: str) -> float:
+    return DATABASE.get_prob(title)
+def calculate_weighted_totals(titles):
+    # to do will calculate combined weighted total, will call probability
+    return DATABASE.get_calc_weighted_ratings(titles) 
+def calculate_group_similarity(titles):
+    return DATABASE.get_similarity(titles)  
 # ────────────────────────── GUI widgets ───────────────────────────
 class MovieCard(QFrame):
     """A single movie “card” with hover‐shadow animation."""
@@ -296,11 +302,7 @@ class MovieCard(QFrame):
         self.setObjectName("MovieCardItem")
         self.setFrameShape(QFrame.StyledPanel)
         self.setFrameShadow(QFrame.Raised)
-        self.setStyleSheet(""" 
-            background: #2b2c2e; 
-            border-radius: 8px;
-        """)
-        
+
         # layout
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
@@ -315,7 +317,6 @@ class MovieCard(QFrame):
         title_lbl.setProperty("class", "MovieTitle")
         lay.addWidget(title_lbl)
 
-        # Probability pill
         # Probability pill with background colour and padding
         prob_str = f"{probability:.2f}"
         prob_lbl = QLabel(prob_str, alignment=Qt.AlignCenter)
@@ -417,17 +418,49 @@ class PickerPage(QWidget):
         self.generate_button = QPushButton("Generate Movies")
         self.update_urls_button = QPushButton("Update URLs")
         
-        for b in (self.generate_button, self.update_urls_button):     # ### PATCH 6
+        for b in (self.generate_button, self.update_urls_button):
             b.setAutoDefault(False)
             b.setFlat(True)     # flat = auto-raise style in Fusion
 
 
-        for widget in (self.attendee_input, self.sheet_input,
-                       self.generate_button, self.update_urls_button):
+   # ─── Build controls + stats card ────────────────────
+        for widget in (
+            self.attendee_input,
+            self.sheet_input,
+            self.generate_button,
+            self.update_urls_button,
+        ):
             control_layout.addWidget(widget)
-        control_layout.addStretch()
-        outer.addLayout(control_layout)
 
+        # ─── Stats card sits immediately after the Update button ─
+        stats_card = QFrame()
+        stats_card.setObjectName("StatsCard")
+        stats_layout = QVBoxLayout(stats_card)
+        stats_layout.setContentsMargins(8, 8, 8, 8)
+        stats_layout.setSpacing(4)
+
+        header = QLabel("Group Metrics", alignment=Qt.AlignCenter)
+        header.setProperty("class", "StatsHeader")
+
+        self.group_sim_label = QLabel("Similarity: —", alignment=Qt.AlignCenter)
+        self.group_sim_label.setProperty("class", "StatsValue")
+
+        self.similarity_bar = QProgressBar()
+        self.similarity_bar.setRange(0, 100)
+        self.similarity_bar.setTextVisible(False)
+
+        self.group_weighted_score = QLabel("Weighted Score: —", alignment=Qt.AlignCenter)
+        self.group_weighted_score.setProperty("class", "StatsValue")
+
+        stats_layout.addWidget(header)
+        stats_layout.addWidget(self.group_sim_label)
+        stats_layout.addWidget(self.similarity_bar)
+        stats_layout.addWidget(self.group_weighted_score)
+
+        control_layout.addWidget(stats_card)
+        control_layout.addStretch()          # push stats (and controls) upward
+        outer.addLayout(control_layout)
+        
         # centre: scrollable movie grid
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -549,6 +582,17 @@ class PickerPage(QWidget):
         self._current_icon_name = arrow_icon   # <<< store icon
         self._current_number     = number                                 # <<< store value
 
+        #similaraties and group metascore
+        similarity = calculate_group_similarity(movies)
+        weighted_scores = calculate_weighted_totals(movies)  
+        self.group_sim_label.setText(f"Similarity: {similarity*100:.1f}%")
+        self.group_weighted_score.setText(f"Total_Rating: {weighted_scores*100:.1f}" )
+        #update bar and movies
+        sim_pct = int(similarity * 100)
+        self.group_sim_label.setText(f"Similarity: {sim_pct}%")
+        self.similarity_bar.setValue(sim_pct)
+        self.group_weighted_score.setText(f"Weighted Score: {weighted_scores*100:.1f}")
+        
     # ───────────── internal slots ─────────────
     @Slot()
     def _open_report_dialog(self) -> None:
@@ -715,6 +759,13 @@ def main() -> None:
         background           :qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #555, stop:1 #333);
         border-radius        :10px;
     }
+    
+    /* base styling for each MovieCard */
+    QFrame#MovieCardItem {
+        background: #2b2c2e;
+        border-radius: 8px;}
+    /*Hover Movie Card*/    
+    QFrame#MovieCardItem:hover {background-color: #303030;}
 
     /* ---- flat buttons (auto-raise look) ---- */
     QPushButton          { background:transparent; border:1px solid #555; padding:3px 10px; }
@@ -730,13 +781,45 @@ def main() -> None:
     QSplitter::handle    { background:transparent; }
     
     QWidget#MovieCardContainer {
-    background: #272727;
-    border-radius: 12px;
+        background: #272727;
+        border-radius: 12px;
     }
 
     /* individual card hover cursor */
     QFrame#MovieCardItem { cursor: pointer;}
-    """)
+    
+    /* ─── stats card styling ──────*/
+    QFrame#StatsCard {
+        background: #272727;
+        border: 1px solid #555;
+        border-radius: 8px;}
+    
+    /* header */
+    QLabel.StatsHeader {
+        color: #eee;
+        font-weight: 600;
+        font-size: 11pt;}
+    
+    /* values */
+    QLabel.StatsValue {
+        color: #3b82f6;     
+        font-weight: 700;
+        font-size: 12pt;
+        padding: 2px 0;}
+    
+    QProgressBar {
+        border: 1px solid #444; border-radius: 4px;
+        background: #202124;
+        height: 10px;
+        margin: 4px 0;}
+  
+    QProgressBar::chunk {
+        background: #3b82f6;
+        border-radius: 4px;}
+  
+    """
+    )
+    
     MainWindow().show()
     app.exec()
 
