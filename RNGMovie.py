@@ -22,16 +22,15 @@ from difflib import get_close_matches
 
 import urllib.parse
 
-
 try:
-    from PySide6.QtCore import Qt, QUrl, QSize, Slot, QPropertyAnimation
+    from PySide6.QtCore import Qt, QUrl, Slot, QPropertyAnimation
     from PySide6.QtGui import QAction, QIcon, QColor, QPalette, QDesktopServices, QPixmap, QPainter, QFont, QColor   
     from PySide6.QtWidgets import (
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QListWidget, QListWidgetItem, QLabel, QStackedWidget, QPushButton,
-        QLineEdit, QSplitter, QScrollArea, QTableWidget, QTableWidgetItem,
+        QLineEdit, QSplitter, QScrollArea, QTableWidget,
         QDialog, QCheckBox, QDialogButtonBox, QMessageBox, QGraphicsDropShadowEffect, QSizePolicy,
-        QGraphicsOpacityEffect 
+        QFrame, QGridLayout, QFrame
     )
 except ModuleNotFoundError as exc:
     sys.stderr.write(
@@ -39,6 +38,7 @@ except ModuleNotFoundError as exc:
         "Install with:  pip install PySide6\n"
     )
     raise exc
+
 
 # ────────────────────────── Configuration ──────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
@@ -285,6 +285,87 @@ def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
 
 
 # ────────────────────────── GUI widgets ───────────────────────────
+class MovieCard(QFrame):
+    """A single movie “card” with hover‐shadow animation."""
+    def __init__(self,
+                    title: str,
+                    url: str,
+                    probability: float,
+                    parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("MovieCardItem")
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setFrameShadow(QFrame.Raised)
+        self.setStyleSheet(""" 
+            background: #2b2c2e; 
+            border-radius: 8px;
+        """)
+        
+        # layout
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 8, 8, 8)
+        lay.setSpacing(6)
+        
+         # Title (clickable link)
+        title_lbl = QLabel(f'<a href="{url}">{title}</a>')
+        title_lbl.setTextFormat(Qt.RichText)
+        title_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        title_lbl.setOpenExternalLinks(True)
+        title_lbl.setWordWrap(True)
+        title_lbl.setProperty("class", "MovieTitle")
+        lay.addWidget(title_lbl)
+
+        # Probability pill
+        # Probability pill with background colour and padding
+        prob_str = f"{probability:.2f}"
+        prob_lbl = QLabel(prob_str, alignment=Qt.AlignCenter)
+
+        # pick background colour
+        if   probability >= 0.7:
+            pill_bg = "#2ecc71"    # green
+            text_color = "#000"
+        elif probability >= 0.4:
+            pill_bg = "#f1c40f"    # yellow
+            text_color = "#000"
+        else:
+            pill_bg = ACCENT_COLOR # your blue
+            text_color = "#fff"
+
+        # inline style for the “pill”
+        prob_lbl.setStyleSheet(f"""
+            background: {pill_bg};
+            color: {text_color};
+            border-radius: 6px;
+            padding: 2px 8px;
+            min-width: 32px;
+        """)
+
+        lay.addWidget(prob_lbl, alignment=Qt.AlignHCenter)
+
+
+        lay.addStretch()
+
+        # drop-shadow effect
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setBlurRadius(4)
+        self._shadow.setColor(QColor(0, 0, 0, 100))
+        self._shadow.setOffset(0, 0)
+        self.setGraphicsEffect(self._shadow)
+        
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        anim = QPropertyAnimation(self._shadow, b"blurRadius", self)
+        anim.setDuration(200)
+        anim.setEndValue(16)
+        anim.start(QPropertyAnimation.DeleteWhenStopped)
+
+    def leaveEvent(self, event):
+        super().leaveEvent(event)
+        anim = QPropertyAnimation(self._shadow, b"blurRadius", self)
+        anim.setDuration(200)
+        anim.setEndValue(4)
+        anim.start(QPropertyAnimation.DeleteWhenStopped)
+        
 class ReportDialog(QDialog):
     """Checkbox list of movies to mark as ‘bad trailer’."""
 
@@ -347,23 +428,20 @@ class PickerPage(QWidget):
         control_layout.addStretch()
         outer.addLayout(control_layout)
 
-        # centre: scrollable movie list
+        # centre: scrollable movie grid
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        card_frame = QWidget()
-        card_frame.setObjectName("MovieCard")
-        card_layout = QVBoxLayout(card_frame)
-        card_layout.setContentsMargins(12, 12, 12, 12)
-        # movie list lives inside the card
-        self.movie_list_container = QWidget()
-        self.movie_list_layout = QVBoxLayout(self.movie_list_container)
-        self.movie_list_layout.setAlignment(Qt.AlignTop)
-        card_layout.addWidget(self.movie_list_container)
-        card_frame.setStyleSheet(
-            "background:#272727; border-radius:12px;"
-        )
-        self.scroll_area.setWidget(self.movie_list_container)
+
+        # container for cards
+        self.movie_grid_frame = QWidget()
+        self.movie_grid_frame.setObjectName("MovieCardContainer")
+        self.movie_grid_layout = QGridLayout(self.movie_grid_frame)
+        self.movie_grid_layout.setContentsMargins(12, 12, 12, 12)
+        self.movie_grid_layout.setSpacing(12)
+
+        self.scroll_area.setWidget(self.movie_grid_frame)
         outer.addWidget(self.scroll_area, 2)
+
 
         # right: stats & direction
         right_layout = QVBoxLayout()
@@ -407,64 +485,33 @@ class PickerPage(QWidget):
 
     # ───────────── public API ─────────────
     def display_movies(self, movies: List[str], trailer_lookup: dict[str, str]) -> None:
-        # clear old widgets
-        while (item := self.movie_list_layout.takeAt(0)):
-            item.widget().deleteLater()
-
+        # clear old cards
+        while self.movie_grid_layout.count():
+            item = self.movie_grid_layout.takeAt(0)
+            if widget := item.widget():
+                widget.deleteLater()
         self.current_movies = movies
         self.current_lookup = trailer_lookup
+        
+        # determine card width (including spacing)
+        card_width = 200                
+        margins    = self.movie_grid_layout.contentsMargins()
+        spacing    = self.movie_grid_layout.horizontalSpacing()
 
-        for title in movies:
-            url = trailer_lookup.get(title, "")
-            prob_val = movie_probability(title)
-            prob_str = f"{prob_val:.2f}"
+        # fetch the inner viewport width of the scroll area
+        available_width = self.scroll_area.viewport().width() \
+                        - margins.left() - margins.right()
+                        
+        # compute number of columns, at least 1
+        cols = max(1, (available_width + spacing) // (card_width + spacing))
 
-            # probability colour tiers
-            if   prob_val >= 0.7: pill_bg = "#2ecc71"      # green
-            elif prob_val >= 0.4: pill_bg = "#f1c40f"      # yellow
-            else               : pill_bg = ACCENT_COLOR    # blue
-
-            # probability pill as its own QLabel
-            pill = QLabel(prob_str)
-            pill.setObjectName("")          # no id
-            pill.setProperty("class", "prob-pill")
-            pill.setStyleSheet(f"background:{pill_bg};")
-            
-            effect = QGraphicsOpacityEffect(pill)        # ### PATCH 5
-            pill.setGraphicsEffect(effect)
-            anim = QPropertyAnimation(effect, b"opacity", pill)
-            anim.setDuration(300)
-            anim.setStartValue(0.0)
-            anim.setEndValue(1.0)
-            anim.start(QPropertyAnimation.DeleteWhenStopped)
-
-            # title label (link if URL)
-            if url:
-                title_html = f'<a href="{url}" style="text-decoration:none">{title}</a>'
-            else:
-                title_html = f"<span style='color:#888'>{title}</span>"
-            
-            title_lbl = QLabel(title_html)
-            title_lbl.setTextFormat(Qt.RichText)
-            title_lbl.setTextInteractionFlags(Qt.TextBrowserInteraction)
-            title_lbl.setOpenExternalLinks(False)
-            title_lbl.linkActivated.connect(lambda _, link=url: QDesktopServices.openUrl(QUrl(link)))
-            
-            title_lbl.setProperty("class", "MovieTitle")
-
-            # row container
-            row = QHBoxLayout()
-            row.addWidget(title_lbl)
-            row.addStretch()
-            row.addWidget(pill)
-
-            wrapper = QWidget()
-            wrapper.setObjectName("MovieRow") 
-            wrapper.setLayout(row)
-            self.movie_list_layout.addWidget(wrapper)
-        self.movie_list_layout.setSpacing(8)
-
-        self.report_button.setEnabled(bool(movies))
+        # add a MovieCard for each movie
+        for idx, title in enumerate(movies):
+            url        = trailer_lookup.get(title, "")
+            prob       = movie_probability(title)
+            card       = MovieCard(title, url, prob, self)
+            row, col   = divmod(idx, cols)
+            self.movie_grid_layout.addWidget(card, row, col)
 
         # random direction + number
         # inside PickerPage.display_movies or wherever you pick direction/number
@@ -681,6 +728,14 @@ def main() -> None:
 
     /* ---- splitter handle invisible ---- */
     QSplitter::handle    { background:transparent; }
+    
+    QWidget#MovieCardContainer {
+    background: #272727;
+    border-radius: 12px;
+    }
+
+    /* individual card hover cursor */
+    QFrame#MovieCardItem { cursor: pointer;}
     """)
     MainWindow().show()
     app.exec()
