@@ -1,0 +1,1 @@
+#a script that will convert all JSON's to SQL, will not need after running once

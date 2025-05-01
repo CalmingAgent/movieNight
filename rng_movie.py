@@ -41,8 +41,7 @@ except ModuleNotFoundError as exc:
     raise exc
 
 #other python scripts needed in dir
-import movie_repository
-
+import movie_night_repository
 
 # ────────────────────────── Configuration ──────────────────────────
 BASE_DIR = Path(__file__).resolve().parent
@@ -282,7 +281,7 @@ def create_youtube_playlist(title: str, video_ids: List[str]) -> Optional[str]:
         return None
 
 # ──────────────────────── Database Calls ─────────────────
-DATABASE = movie_repository
+DATABASE = movie_night_repository
 def movie_probability(title: str) -> float:
     return DATABASE.get_prob(title)
 def calculate_weighted_totals(titles):
@@ -607,7 +606,7 @@ class StatsPage(QWidget):
     """Placeholder stats page."""
     def __init__(self) -> None:
         super().__init__()
-        self.table = QTableWidget(0, 3)  # TODO: implement real stats
+        self.table = QTableWidget(0, 3) 
 
 
 # ────────────────────────── Main Window ───────────────────────────
