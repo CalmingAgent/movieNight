@@ -16,12 +16,14 @@ from ..settings        import ICON
 from .button_logic    import generate_movies, update_trailer_urls
 from .picker_page     import PickerPage
 from .stat_page       import StatsPage
+from metadata.service import MovieNightDB
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, db: MovieNightDB):
         super().__init__()
         self.setWindowTitle("Movie Night")
+        self.db = db
         self.resize(960, 600)
 
         # pages

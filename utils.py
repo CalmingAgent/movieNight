@@ -8,7 +8,7 @@ from PySide6.QtCore    import Qt
 from PySide6.QtGui     import QPixmap, QPainter, QFont, QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-from .settings import LOG_PATH, ACCENT_COLOR
+from .settings import LOG_PATH, ACCENT_COLOR, META_SCORE_WEIGHTS
 
 
 def log_debug(message: str) -> None:
@@ -114,3 +114,13 @@ def print_progress_bar_cmdln(
     if iteration >= total:
         print()
 
+def calculate_meta_score(imdb, rt_critic, rt_audience, metacritic, weights=None):
+    weights = weights or META_SCORE_WEIGHTS
+    required_keys = {"imdb", "rt_critic", "rt_audience", "metacritic"}
+    assert required_keys.issubset(weights.keys()), "Missing weight keys!"
+    return (
+        imdb * weights["imdb"] +
+        rt_critic * weights["rt_critic"] +
+        rt_audience * weights["rt_audience"] +
+        metacritic * weights["metacritic"]
+    )
