@@ -1,29 +1,165 @@
-##TMDB calls returning metadata
-# movieNight/metadata/tmdb_client.py
 
-import os
+from __future__ import annotations
+
+import sys
+from typing import Optional, Tuple, Dict, Any, List
+import datetime as _dt
+
 import requests
-from ..utils import log_debug, normalize_title, youtube_api_search, get_video_duration_sec
+
+from ..utils import log_debug, normalize
+from ..settings import TMDB_API_KEY
+from service import MovieNightDB
+import international_reference
+
 
 class TMDBClient:
+    """Thin wrapper around The Movie Database (TMDb) that persists to SQLite."""
     BASE_URL = "https://api.themoviedb.org/3"
-    API_KEY  = os.getenv("TMDB_API_KEY")
 
-    def __init__(self, api_key: str | None = None):
-        self.api_key = api_key or self.API_KEY
-        if not self.api_key:
-            raise RuntimeError("TMDB_API_KEY not set")
+    # ------------------------------------------------------------------
+    # Construction
+    # ------------------------------------------------------------------
+    def __init__(self, db: MovieNightDB, api_key: str | None = None):
+        self.db = db
+        self.api_key = api_key or TMDB_API_KEY
 
-    def find_trailer(self, movie_title: str) -> str | None:
-        """
-        Search TMDB for an exact match on movie_title; returns a YouTube URL or None.
-        """
-        # port your tmdb_find_trailer(...) logic here,
-        # replacing global API_KEY references with self.api_key
-        ...
+    # ------------------------------------------------------------------
+    # Public – High‑level helper
+    # ------------------------------------------------------------------
+    def get_or_fetch_movie(self, title: str) -> Optional[Dict[str, Any]]:
+        """Return a *movies* row (dict‑like) from DB; fetch + insert if absent.
 
-    def search_fallback(self, movie_title: str) -> str | None:
+        1. Exact‑title lookup in `movies`.
+        2. If not found, call TMDb; on success, insert the row & genres.
         """
-        Fallback to YouTube search if TMDB fails or gives ambiguous/zero results.
-        """
-        return youtube_api_search(f"{movie_title} official trailer")[0]
+        row = self.db.cur.execute(
+            "SELECT * FROM movies WHERE LOWER(title)=LOWER(?)", (title,)
+        ).fetchone()
+        if row:
+            return dict(row)
+
+        # ---- TMDb fetch --------------------------------------------------
+        meta = self._fetch_metadata(title)
+        if not meta:
+            return None
+
+        movie_id = self.db.add_movie(meta["movie_fields"])
+
+        # genres
+        for gname in meta["genres"]:
+            gid = self._ensure_genre(gname)
+            self.db.cur.execute(
+                "INSERT OR IGNORE INTO movie_genres (movie_id, genre_id) VALUES (?,?)",
+                (movie_id, gid),
+            )
+        self.db.conn.commit()
+        return self.db.cur.execute("SELECT * FROM movies WHERE id=?", (movie_id,)).fetchone()
+
+    # ------------------------------------------------------------------
+    # Internal helpers – API calls
+    # ------------------------------------------------------------------
+    def _search_exact(self, title: str) -> Optional[dict]:
+        """Search TMDb pages 1–2; return movie JSON on *exact* title match."""
+        norm_query = normalize(title)
+        all_results: List[dict] = []
+        for page in (1, 2):
+            r = requests.get(
+                f"{self.BASE_URL}/search/movie",
+                params={"api_key": self.api_key, "query": title, "page": page},
+                timeout=10,
+            )
+            if r.status_code == 429:
+                log_debug("TMDb rate limit reached – exiting…")
+                sys.exit(1)
+            payload = r.json()
+            results = payload.get("results", [])
+            all_results.extend(results)
+            if page >= payload.get("total_pages", 1):
+                break
+        matches = [m for m in all_results if normalize(m.get("title", "")) == norm_query]
+        return matches[0] if len(matches) == 1 else None
+
+    def _fetch_metadata(self, title: str) -> Optional[dict]:
+    
+        """Return a dict with *movie_fields* and *genres* extracted from TMDb."""
+        m = self._search_exact(title)
+        if not m:
+            return None
+        tmdb_id = m["id"]
+        log_debug(f"TMDb → matched ID={tmdb_id} for “{title}”")
+
+        # ── fetch details ───────────────────────────────────────────────
+        det = requests.get(
+            f"{self.BASE_URL}/movie/{tmdb_id}",
+            params={"api_key": self.api_key, "append_to_response": "release_dates,videos"},
+            timeout=10,
+        ).json()
+
+        # ---- runtime / year / release window --------------------------
+        release_date = det.get("release_date", "")  # yyyy-mm-dd
+        year = int(release_date[:4]) if release_date else None
+        month = int(release_date[5:7]) if len(release_date) >= 7 else None
+        release_window = _month_to_window(month)
+
+        # ---- MPAA rating ---------------------------------------------
+        mpaa = _extract_us_cert(det.get("release_dates", {}))
+
+        # ---- Trailer (YouTube) ---------------------------------------
+        trailer_url = None
+        for v in det.get("videos", {}).get("results", []):
+            if v.get("site") == "YouTube" and v.get("type") == "Trailer":
+                trailer_url = f"https://www.youtube.com/watch?v={v['key']}"
+                break
+
+        # ---- Build movie_fields dict ---------------------------------
+        movie_fields = {
+            "title": det.get("title"),
+            "year": year,
+            "release_window": release_window,
+            "mpaa": mpaa,
+            "duration_seconds": det.get("runtime", 0) * 60 if det.get("runtime") else None,
+            "youtube_link": trailer_url,
+            # remaining fields left NULL – app can fill later
+        }
+        genres = [g["name"] for g in det.get("genres", [])]
+        return {"movie_fields": movie_fields, "genres": genres}
+
+    @staticmethod
+    def _classify_release_window(date_str: str, country: str | None = "US") -> str:
+        if not date_str:
+            return ""
+        try:
+            dt = _dt.date.fromisoformat(date_str)
+        except ValueError:
+            return ""
+
+        m, d = dt.month, dt.day
+        for (start, end), label in international_reference.COUNTRY_WINDOWS.get(country, []):
+            if (m, d) >= start and (m, d) <= end:
+                return label
+
+        seasons = international_reference.SEASONS_SOUTH if country in international_reference.SOUTH_HEMI else international_reference.SEASONS_NORTH
+        return seasons[((m % 12) // 3)]
+    @staticmethod
+    def _ensure_genre(self, name: str) -> int:
+        row = self.db.cur.execute("SELECT id FROM genres WHERE name=?", (name,)).fetchone()
+        if row:
+            return row["id"]
+        self.db.cur.execute("INSERT INTO genres (name) VALUES (?)", (name,))
+        self.db.conn.commit()
+        return self.db.cur.lastrowid
+    @staticmethod
+    def get_rating_scheme(country:str):
+        return international_reference.RATING_SCHEMES(country.upper())
+
+
+def _extract_us_cert(rel_dates: dict) -> str | None:
+    """Dig into TMDb release_dates to find the US MPAA certification."""
+    for entry in rel_dates.get("results", []):
+        if entry.get("iso_3166_1") == "US":
+            for rel in entry.get("release_dates", []):
+                cert = rel.get("certification")
+                if cert:
+                    return cert
+    return None

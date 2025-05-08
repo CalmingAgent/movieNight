@@ -6,7 +6,7 @@ from . import models
 # API clients
 from .omdb_client    import OMDBClient
 from .tmdb_client    import TMDBClient
-from .youtube_client import YouTubeClient
+from .youtube_client import YTClient
 
 # your service-layer helpers
 from .service import movie_probability, calculate_weighted_totals, calculate_group_similarity

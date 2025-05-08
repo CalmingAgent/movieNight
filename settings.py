@@ -30,6 +30,8 @@ USER_TOKEN_PATH     = BASE_DIR / "youtube_token.pickle"
 LOG_PATH            = BASE_DIR / "trailer_debug.log"
 AUTO_UPDATE_SCRIPT  = BASE_DIR / "autoUpdate.py"
 GOOGLE_SERVICE_ACCOUNT_FILE = BASE_DIR / "service_secret.json"
+DATABASE_PATH       = BASE_DIR / "movie_night.db"
+
 
 # API scopes and URLs
 DRIVE_SCOPES       = ["https://www.googleapis.com/auth/drive.readonly"]
@@ -40,3 +42,16 @@ YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 # UI constants
 ACCENT_COLOR = "#3b82f6"
 ICON = lambda name: QIcon(str(BASE_DIR / "icons" / f"{name}.svg"))
+
+META_SCORE_WEIGHTS = {
+    "imdb": 0.4,
+    "rt_critic": 0.2,
+    "rt_audience": 0.2,
+    "metacritic": 0.2
+}
+
+TREND_PROBABILITY_WEIGHTS = {
+    "google_trend": 0.4,
+    "actor_trend": 0.4,
+    "combined_score": 0.2
+}
