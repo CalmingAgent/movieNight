@@ -1,4 +1,4 @@
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Tuple, Dict, Any, List
 import re
 # ────────────────────────────────────────────────────────────────────────────
 # Holiday / window map by ISO‑3166 country code.
@@ -306,7 +306,7 @@ RATING_SCHEMES: Dict[str, Dict[str, Any]] = {
     "NG": {"body": "NFVCB", "levels": ["G", "PG", "12", "15", "18"], "adult_cutoff": "18"},
     "ZA": {"body": "FPB", "levels": ["A", "PG", "7‑9PG", "10‑12PG", "13", "16", "18", "X18"], "adult_cutoff": "18"},}
 
-
+#bottom 2 functions can be used to compare ratings from different countries
 def rating_min_age(country: str, symbol: str) -> int | None:
     """Return the minimum recommended age implied by *symbol* in *country*.
 

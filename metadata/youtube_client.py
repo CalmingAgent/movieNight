@@ -22,41 +22,52 @@ class YTClient:
     def __init__(self, db: MovieNightDB, api_key: str | None = None):
         self.db = db
         self.api_key = api_key or YOUTUBE_API_KEY
-
-    # ------------------------------------------------------------------
-    # YouTube search helpers (public so orchestration layer can choose)
-    # ------------------------------------------------------------------
-    @staticmethod
-    def search_youtube_api(query: str) -> Optional[Tuple[str, str]]:
-        """Return *(video_url, title)* using **YouTube Data API v3**."""
+        
+    def search_youtube_api(self, query: str) -> Optional[tuple[str, str]]:
         params = {
             "part": "snippet",
             "q": query,
-            "key": YOUTUBE_API_KEY,
+            "key": self.api_key,          # use instance key
             "videoDuration": "short",
             "maxResults": 1,
             "type": "video",
         }
         try:
-            resp = requests.get(YOUTUBE_SEARCH_URL, params=params, timeout=10)
-            items = resp.json().get("items", [])
-            if items:
-                vid_id = items[0]["id"]["videoId"]
-                title = items[0]["snippet"]["title"]
-                return f"https://www.youtube.com/watch?v={vid_id}", title
+            r = requests.get(YOUTUBE_SEARCH_URL, params=params, timeout=10)
+            item = r.json().get("items", [None])[0]
+            if item:
+                vid  = item["id"]["videoId"]
+                title = item["snippet"]["title"]
+                return f"https://www.youtube.com/watch?v={vid}", title
         except Exception as exc:
             log_debug(f"YouTube API search error: {exc}")
         return None
-    
+
     @staticmethod
-    def get_video_views(url_or_id: str) -> Optional[int]:
+    def _extract_video_id(url_or_id: str) -> str | None:
+        """Return the 11‑char YouTube video ID or *None* if it can’t be parsed."""
+        # Already an ID
+        if re.fullmatch(r"[A-Za-z0-9_-]{11}", url_or_id):
+            return url_or_id
+
+        # Full or shortened URLs
+        patterns = [
+            r"(?:v=|\/videos\/|embed\/|youtu\.be\/)([A-Za-z0-9_-]{11})",
+        ]
+        for pat in patterns:
+            m = re.search(pat, url_or_id)
+            if m:
+                return m.group(1)
+        return None 
+
+    def get_video_views(self, url_or_id: str) -> Optional[int]:
         """Return the public *viewCount* for a YouTube video or *None* on error."""
         vid = YTClient._extract_video_id(url_or_id)
         if not vid:
             log_debug("get_video_views: could not parse video ID")
             return None
 
-        params = {"part": "statistics", "id": vid, "key": YOUTUBE_API_KEY}
+        params = {"part": "statistics", "id": vid, "key": self.api_key}
         try:
             resp = requests.get("https://www.googleapis.com/youtube/v3/videos", params=params, timeout=10)
             items = resp.json().get("items", [])
@@ -66,7 +77,6 @@ class YTClient:
         except Exception as exc:
             log_debug(f"YouTube views lookup error: {exc}")
         return None
-
     @staticmethod
     def search_with_yt_dlp(query: str) -> Optional[Tuple[str, str]]:
         """Raw **yt-dlp** search helper – *never called automatically.*"""
@@ -83,71 +93,52 @@ class YTClient:
         return None
 
     # ------------------------------------------------------------------
-    # Main convenience method (DB → API) – **no yt‑dlp fallback**
+    # Main convenience method (DB → API)
     # ------------------------------------------------------------------
-    def locate_trailer(self, title: str) -> Tuple[Optional[str], str, Optional[str]]:
-        """Locate a trailer URL and store it in the DB if newly found.
-
-        Order of attempts:
-        1. Exact title match in DB (`movies.youtube_link`).
-        2. Fuzzy match in DB (only rows with a link).
-        3. YouTube Data API lookup.
-
-        Returns `(url, source, api_title_if_any)` where `source` ∈ {`db`,
-        `db_fuzzy`, `youtube_api`, ``}.
-        """
-        # 1) Exact match -------------------------------------------------------
+    def lookup_trailer_in_db(self, title: str) -> tuple[Optional[str], str]:
         row = self.db.cur.execute(
-            "SELECT id, youtube_link FROM movies WHERE LOWER(title) = LOWER(?)",
-            (title,),
+            "SELECT youtube_link FROM movies WHERE LOWER(title)=LOWER(?)",
+            (title,)
         ).fetchone()
         if row and row["youtube_link"]:
-            return row["youtube_link"], "db", None
+            return row["youtube_link"], "db"
 
-        # 2) Fuzzy DB match ----------------------------------------------------
-        self.db.cur.execute("SELECT id, title, youtube_link FROM movies WHERE youtube_link IS NOT NULL")
+        self.db.cur.execute(
+            "SELECT title, youtube_link FROM movies WHERE youtube_link IS NOT NULL"
+        )
         rows = self.db.cur.fetchall()
         if rows:
-            norm_map = {normalize(r["title"]): (r["youtube_link"], r["id"]) for r in rows}
-            match_key = fuzzy_match(normalize(title), list(norm_map))
-            if match_key:
-                url, _ = norm_map[match_key]
-                return url, "db_fuzzy", None
+            norm_map = {normalize(r["title"]): r["youtube_link"] for r in rows}
+            key = fuzzy_match(normalize(title), list(norm_map))
+            if key:
+                return norm_map[key], "db_fuzzy"
+        return None, ""
+    
+    def search_trailer_youtube(self, title: str) -> tuple[Optional[str], Optional[str]]:
+        return self.search_youtube_api(f"{title} official trailer")
+    def set_movie_trailer(self, movie_id: int, url: str) -> None:
+        self.db.update_movie_field(movie_id, "youtube_link", url)
 
-        # 3) YouTube Data API --------------------------------------------------
-        result = self.search_youtube_api(f"{title} official trailer")
-        if result:
-            url, api_title = result
-            # Persist back to DB
-            if row:  # we had a row without a link
-                self.db.update_movie_field(row["id"], "youtube_link", url)
-            else:
-                movie_id = self.db.get_movie_id_by_title(title)
-                if movie_id:
-                    self.db.update_movie_field(movie_id, "youtube_link", url)
-                else:
-                    self.db.add_movie({"title": title, "youtube_link": url})
-            return url, "youtube_api", api_title
+    def locate_trailer(self, title: str) -> tuple[Optional[str], str, Optional[str]]:
+        url, source = self.lookup_trailer_in_db(title)
+        if url:
+            return url, source, None
 
-        return None, "", None
+        # YouTube API fallback
+        url, api_title = self.search_trailer_youtube(title)
+        if not url:
+            return None, "", None
+
+        movie_id = self.db.get_movie_id_by_title(title)
+        if movie_id:
+            self.set_movie_trailer(movie_id, url)
+        return url, "youtube_api", api_title
+
 
     # ------------------------------------------------------------------
-    # Playlist helper (unchanged)
+    # Playlist helper
     # ------------------------------------------------------------------
-    @staticmethod
-    def _get_youtube_service():
-        creds = None
-        if USER_TOKEN_PATH.exists():
-            creds = pickle.loads(USER_TOKEN_PATH.read_bytes())
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_PATH), YOUTUBE_SCOPES)
-                creds = flow.run_local_server(port=0)
-            USER_TOKEN_PATH.write_bytes(pickle.dumps(creds))
-        return build("youtube", "v3", credentials=creds)
-
+    
     def create_youtube_playlist(self, title: str, video_ids: list[str]) -> Optional[str]:
         try:
             svc = self._get_youtube_service()
@@ -179,6 +170,19 @@ class YTClient:
         return None
     
     @staticmethod
+    def _get_youtube_service():
+        creds = None
+        if USER_TOKEN_PATH.exists():
+            creds = pickle.loads(USER_TOKEN_PATH.read_bytes())
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_PATH), YOUTUBE_SCOPES)
+                creds = flow.run_local_server(port=0)
+            USER_TOKEN_PATH.write_bytes(pickle.dumps(creds))
+        return build("youtube", "v3", credentials=creds)    
+    @staticmethod
     def get_video_duration_sec(video_url: str) -> int | None:
         """Return length in seconds, or None on failure (no Google API key needed)."""
         ydl_opts = {"quiet": True, "skip_download": True}
@@ -187,6 +191,6 @@ class YTClient:
                 info = ydl.extract_info(video_url, download=False)
                 return info.get("duration")
             except Exception as exc:
-                print("yt-dlp error:", exc)
+                log_debug(f"yt-dlp duration error: {exc}")
                 return None
         

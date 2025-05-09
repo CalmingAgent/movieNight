@@ -1,8 +1,7 @@
-
 from __future__ import annotations
 
 import sys
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Optional, Dict, Any, List
 import datetime as _dt
 
 import requests
@@ -99,11 +98,14 @@ class TMDBClient:
         # ---- runtime / year / release window --------------------------
         release_date = det.get("release_date", "")  # yyyy-mm-dd
         year = int(release_date[:4]) if release_date else None
-        month = int(release_date[5:7]) if len(release_date) >= 7 else None
-        release_window = _month_to_window(month)
+        origin = (
+            det["production_countries"][0]["iso_3166_1"]
+            if det.get("production_countries") else "US")
+        origin = origin.upper()
+        release_window = self.classify_release_window(release_date, origin)
 
         # ---- MPAA rating ---------------------------------------------
-        mpaa = _extract_us_cert(det.get("release_dates", {}))
+        rating_cert = self.extract_cert(det, origin)
 
         # ---- Trailer (YouTube) ---------------------------------------
         trailer_url = None
@@ -117,16 +119,17 @@ class TMDBClient:
             "title": det.get("title"),
             "year": year,
             "release_window": release_window,
-            "mpaa": mpaa,
+            "rating_cert": rating_cert,
             "duration_seconds": det.get("runtime", 0) * 60 if det.get("runtime") else None,
             "youtube_link": trailer_url,
+            "origin_country": origin
             # remaining fields left NULL – app can fill later
         }
         genres = [g["name"] for g in det.get("genres", [])]
         return {"movie_fields": movie_fields, "genres": genres}
 
     @staticmethod
-    def _classify_release_window(date_str: str, country: str | None = "US") -> str:
+    def classify_release_window(date_str: str, country: str | None = "US") -> str:
         if not date_str:
             return ""
         try:
@@ -135,13 +138,14 @@ class TMDBClient:
             return ""
 
         m, d = dt.month, dt.day
+        country = country.upper()
         for (start, end), label in international_reference.COUNTRY_WINDOWS.get(country, []):
             if (m, d) >= start and (m, d) <= end:
                 return label
 
         seasons = international_reference.SEASONS_SOUTH if country in international_reference.SOUTH_HEMI else international_reference.SEASONS_NORTH
         return seasons[((m % 12) // 3)]
-    @staticmethod
+    
     def _ensure_genre(self, name: str) -> int:
         row = self.db.cur.execute("SELECT id FROM genres WHERE name=?", (name,)).fetchone()
         if row:
@@ -150,16 +154,11 @@ class TMDBClient:
         self.db.conn.commit()
         return self.db.cur.lastrowid
     @staticmethod
-    def get_rating_scheme(country:str):
-        return international_reference.RATING_SCHEMES(country.upper())
-
-
-def _extract_us_cert(rel_dates: dict) -> str | None:
-    """Dig into TMDb release_dates to find the US MPAA certification."""
-    for entry in rel_dates.get("results", []):
-        if entry.get("iso_3166_1") == "US":
-            for rel in entry.get("release_dates", []):
-                cert = rel.get("certification")
-                if cert:
-                    return cert
-    return None
+    def extract_cert(details: dict, country="US", release_type=3):
+        blocks = details.get("release_dates", {}).get("results", [])
+        for b in blocks:
+            if b["iso_3166_1"] == country:
+                for rd in b["release_dates"]:
+                    if rd["type"] == release_type and rd["certification"]:
+                        return rd["certification"]
+        return None

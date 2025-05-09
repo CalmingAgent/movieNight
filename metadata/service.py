@@ -88,7 +88,7 @@ class Movie:
     title: str
     year: int
     release_window: str
-    mpaa: str
+    rating_cert: str
     duration: int
     youtube_link: str
     box_office_expected: float
@@ -146,7 +146,7 @@ class MovieNightDB:
             title TEXT NOT NULL,
             year INTEGER,
             release_window TEXT,
-            mpaa TEXT,
+            rating_cert TEXT,
             duration_seconds INTEGER,
             youtube_link TEXT,
             box_office_expected NUMERIC(12,2),
@@ -262,7 +262,7 @@ class MovieNightDB:
     
     def update_movie_field(self, movie_id: int, field_name: str, new_value):
         allowed_fields = {
-            "title", "year", "release_window", "mpaa", "duration_seconds",
+            "title", "year", "release_window", "rating_cert", "duration_seconds",
             "youtube_link", "box_office_expected", "box_office_actual",
             "google_trend_score", "actor_trend_score", "combined_score", "franchise"
         }
