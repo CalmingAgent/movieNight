@@ -13,10 +13,11 @@ from PySide6.QtWidgets import (
 )
 
 from ..settings        import ICON
-from .button_logic    import generate_movies, update_trailer_urls
+from .controller    import add_remove_movie, update_data, generate_movies 
 from .picker_page     import PickerPage
 from .stat_page       import StatsPage
-from metadata.service import MovieNightDB
+from metadata.movie_night_db import MovieNightDB
+import movie_card
 
 
 class MainWindow(QMainWindow):
@@ -60,20 +61,28 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_update(self):
         """Invoke the Update URLs routine."""
-        update_trailer_urls()
+        update_data()
         QMessageBox.information(self, "Update Complete", "Trailer URLs have been refreshed.")
 
     @Slot()
     def _on_generate(self):
         """Gather input, call button_logic.generate_movies, update UI or show errors."""
         try:
-            titles, lookup = generate_movies(
-                self.picker_page.attendee_input.text(),
-                self.picker_page.sheet_input.text(),
-                self
+            attendee_count = int(self.picker_page.attendee_input.text().strip())
+            picks, trailer_map = generate_movies(
+                self.picker_page.sheet_input.text().strip(),
+                attendee_count,
             )
         except ValueError as err:
-            QMessageBox.warning(self, "Input Error", str(err))
+            QMessageBox.warning(self, "Error", str(err))
             return
 
-        self.picker_page.display_movies(titles, lookup)
+        self._last_titles = picks                       # so the OK/NG dialog works
+        self.picker_page.display_movies(picks, trailer_map)
+        
+    @Slot()
+    def _on_add_remove(self, delta: int):
+        cur  = [w.title() for w in self.picker_page.findChildren(movie_card)]
+        pool = self._all_titles_for_sheet   # cache set in _on_generate
+        new  = add_remove_movie(cur, pool, delta)
+        self.picker_page.display_movies(new, {t: locate_trailer("", t)[0] for t in new})

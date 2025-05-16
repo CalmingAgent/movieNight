@@ -10,10 +10,12 @@ from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-from ..settings import  (YOUTUBE_SEARCH_URL, YOUTUBE_API_KEY,
+from ...settings import  (YOUTUBE_SEARCH_URL, YOUTUBE_API_KEY,
     CLIENT_SECRET_PATH, USER_TOKEN_PATH, YOUTUBE_SCOPES)
-from ..utils    import normalize, log_debug, fuzzy_match
-from service    import MovieNightDB
+from ...utils    import normalize, log_debug, fuzzy_match
+from metadata.movie_night_db    import MovieNightDB
+
+client = YTClient()
 
 class YTClient:
     """

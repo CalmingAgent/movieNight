@@ -1,14 +1,22 @@
 
+import functools
+import pathlib
+import random
 import re
 import json
 from datetime import datetime
+import subprocess
+from sys import platform
+import tempfile
+import time
 from typing import Optional, List
+import webbrowser
 
 from PySide6.QtCore    import Qt
 from PySide6.QtGui     import QPixmap, QPainter, QFont, QColor, QPalette
 from PySide6.QtWidgets import QApplication
 
-from .settings import LOG_PATH, ACCENT_COLOR, META_SCORE_WEIGHTS
+from .settings import LOG_PATH, ACCENT_COLOR
 
 
 def log_debug(message: str) -> None:
@@ -114,13 +122,59 @@ def print_progress_bar_cmdln(
     if iteration >= total:
         print()
 
-def calculate_meta_score(imdb, rt_critic, rt_audience, metacritic, weights=None):
-    weights = weights or META_SCORE_WEIGHTS
-    required_keys = {"imdb", "rt_critic", "rt_audience", "metacritic"}
-    assert required_keys.issubset(weights.keys()), "Missing weight keys!"
-    return (
-        imdb * weights["imdb"] +
-        rt_critic * weights["rt_critic"] +
-        rt_audience * weights["rt_audience"] +
-        metacritic * weights["metacritic"]
-    )
+def open_url_host_browser(url: str) -> None:
+    """Opens *url* with host OS default browser (WSL-aware)."""
+    if "microsoft-standard" in platform.uname().release.lower():
+        subprocess.Popen(["powershell.exe", "-c", f"Start-Process '{url}'"])
+    else:
+        webbrowser.open(url)
+
+def throttle(min_delay: float = 1.0):
+    """
+    Decorator that sleeps `min_delay ±0.3 s` between *network* calls on the
+    same function – thread-safe for a single GUI thread.
+    """
+    def wrap(fn):
+        last_hit = 0.0
+        @functools.wraps(fn)
+        def inner(*a, **kw):
+            nonlocal last_hit
+            wait = min_delay - (time.time() - last_hit)
+            if wait > 0:
+                time.sleep(wait + random.uniform(0, 0.3))
+            out = fn(*a, **kw)
+            last_hit = time.time()
+            return out
+        return inner
+    return wrap
+       
+def trend_score(keyword: str) -> int | None:
+    """
+    Returns the 7-day average Google-Trends interest (0-100) for *keyword*.
+    Requires `npm i -g google-trends-api`.
+    """
+    node_script = f"""
+        const gtrends = require('google-trends-api');
+        gtrends.interestOverTime({{ keyword: "{keyword}", startTime: new Date(Date.now()-7*24*3600*1000) }})
+          .then(r => console.log(JSON.stringify(r)))
+          .catch(_ => process.exit(1));
+    """
+    with tempfile.NamedTemporaryFile("w+", suffix=".js", delete=False) as js:
+        js.write(node_script)
+    try:
+        raw = subprocess.check_output(["node", js.name], timeout=20)
+        obj = json.loads(raw)
+        points = [v['value'][0] for v in obj["default"]["timelineData"]]
+        return round(sum(points)/len(points))
+    except Exception:
+        return None
+    finally:
+        pathlib.Path(js.name).unlink(missing_ok=True)
+        
+def score_to_grade(score: float) -> str:
+    bands = [
+        ( 100, "S"), ( 97, "A+"), ( 92, "A"), ( 75, "A-"),
+        ( 68, "B+"), ( 62, "B"), ( 55, "B-"),
+        ( 48, "C+"), ( 42, "C"), ( 35, "C-"),
+        ( 25, "D"), ( 15, "E"), (  0, "F"),
+    ]
