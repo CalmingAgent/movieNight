@@ -2,14 +2,14 @@
 
 # core API modules
 from . import omdb
-from . import scraper
+from . import scrapers
 from . import sheets_xlsx
 from . import tmdb
 from . import youtube
 
 __all__ = [
     "omdb",
-    "scraper",
+    "scrapers",
     "sheets_xlsx",
     "tmdb",
     "youtube",

@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..settings import ACCENT_COLOR
-from ..utils    import make_number_pixmap
+from ..utils    import open_url_host_browser
 
 
 class MovieCard(QFrame):
@@ -22,8 +22,12 @@ class MovieCard(QFrame):
         # Title link
         link = QLabel(f'<a href="{trailer_url}">{title}</a>')
         link.setTextFormat(Qt.RichText)
-        link.setOpenExternalLinks(True)
+        link.setTextInteractionFlags(Qt.TextBrowserInteraction)  # allow clicks / copy
+        link.setCursor(Qt.PointingHandCursor)                    # hand cursor on hover
         link.setWordWrap(True)
+
+        link.setOpenExternalLinks(False)                         # let us handle it
+        link.linkActivated.connect(open_url_host_browser)        # our WSL-smart slot
         layout.addWidget(link)
 
         # Probability pill
