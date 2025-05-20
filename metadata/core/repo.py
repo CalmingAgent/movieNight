@@ -356,3 +356,13 @@ class MovieRepo:
             params,
         )
         commit()
+    
+    
+    @staticmethod    
+    def total_movie_count() -> int:
+        return execute("SELECT COUNT(*) AS n FROM movies").fetchone()["n"]
+    @staticmethod
+    def count_movies_without_trailer() -> int:
+        return execute(
+            "SELECT COUNT(*) AS n FROM movies WHERE youtube_link IS NULL OR youtube_link=''"
+        ).fetchone()["n"]
