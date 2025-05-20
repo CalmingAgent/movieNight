@@ -12,7 +12,7 @@ from .movie_card      import MovieCard
 from ..utils           import make_number_pixmap
 from metadata import repo
 from metadata.analytics.similarity import calculate_similarity  
-from metadata.analytics.scoring    import calculate_meta_combined_score, calculate_probability_to_watch, calculate_expected_grade
+from metadata.analytics.scoring    import calculate_weighted_totals, calculate_combined_score, calculate_probability_to_watch, calculate_expected_grade
 from .controller                   import generate_movies
 from itertools import combinations
 
@@ -131,11 +131,27 @@ class PickerPage(QWidget):
 
         # Populate
         for idx, title in enumerate(titles):
-            url  = trailer_map.get(title, "")
-            prob = calculate_group_similarity([title])  # or movie_probability
-            card = MovieCard(title, url, prob, self)
-            row, col = divmod(idx, cols)
-            self.grid_layout.addWidget(card, row, col)
+            url   = trailer_map.get(title, "")
+
+            # --- fetch movie row once ----------------------------------
+            mid   = repo.get_movie_id_by_title(title)
+            row   = repo.by_id(mid) if mid else None
+
+            # probability (0-1 → float)
+            prob  = calculate_probability_to_watch([title])
+
+            # expected grade (A, B+, …); stub returns "—" if not implemented
+            grade = calculate_expected_grade(title)        
+
+            # duration in seconds (None falls back to "—" in MovieCard)
+            dur_s = row["duration_seconds"] if row else None
+
+            # create the card with new signature
+            card = MovieCard(title, url, prob, grade, dur_s, self)
+
+            # place in grid
+            r, c = divmod(idx, cols)
+            self.grid_layout.addWidget(card, r, c)
 
         # Random direction + number
         direction = random.choice(self.DIRECTIONS)

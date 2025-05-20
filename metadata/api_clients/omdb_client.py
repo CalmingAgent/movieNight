@@ -5,6 +5,7 @@ import os, re, functools, requests
 from typing import Any, Dict, Optional, Tuple, List
 
 from ...utils import log_debug, throttle
+from omdb_client import OMDBClient
 
 OMDB_URL = "http://www.omdbapi.com/" 
 client = OMDBClient()

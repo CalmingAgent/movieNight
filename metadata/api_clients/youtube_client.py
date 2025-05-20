@@ -14,6 +14,7 @@ from ...settings import  (YOUTUBE_SEARCH_URL, YOUTUBE_API_KEY,
     CLIENT_SECRET_PATH, USER_TOKEN_PATH, YOUTUBE_SCOPES)
 from ...utils    import normalize, log_debug, fuzzy_match
 from metadata.movie_night_db    import MovieNightDB
+from youtube_client import YTClient
 
 client = YTClient()
 
@@ -120,21 +121,6 @@ class YTClient:
         return self.search_youtube_api(f"{title} official trailer")
     def set_movie_trailer(self, movie_id: int, url: str) -> None:
         self.db.update_movie_field(movie_id, "youtube_link", url)
-
-    def locate_trailer(self, title: str) -> tuple[Optional[str], str, Optional[str]]:
-        url, source = self.lookup_trailer_in_db(title)
-        if url:
-            return url, source, None
-
-        # YouTube API fallback
-        url, api_title = self.search_trailer_youtube(title)
-        if not url:
-            return None, "", None
-
-        movie_id = self.db.get_movie_id_by_title(title)
-        if movie_id:
-            self.set_movie_trailer(movie_id, url)
-        return url, "youtube_api", api_title
 
 
     # ------------------------------------------------------------------

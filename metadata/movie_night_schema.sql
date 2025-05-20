@@ -99,3 +99,5 @@ CREATE TABLE IF NOT EXISTS movie_aliases (
     alt_title TEXT,
     PRIMARY KEY (movie_id, alt_title)
 );
+
+CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT);

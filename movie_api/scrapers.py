@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional
 
 from ..utils import log_debug   # your existing logger
 
-# ---------- Regex patterns (unchanged) --------------------------------------
+# ---------- Regex patterns--------------------------------------
 _HISTOGRAM_RE   = re.compile(rb'"rating_histogram":\s*(\[[^\]]+\])', re.DOTALL)
 _DEMOGRAPHIC_RE = re.compile(rb'"demographic_data":\s*(\{.+?\})\s*,\s*"ratings_bar"', re.DOTALL)
 _TOP250_RE      = re.compile(rb'"topRank":\s*(\d+)', re.DOTALL)

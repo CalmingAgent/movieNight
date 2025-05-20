@@ -1,11 +1,11 @@
 # expected_grade(), watch_probability()
 
 from typing import Dict
-from settings import META_SCORE_WEIGHTS, TREND_PROBABILITY_WEIGHTS
+from settings import META_SCORE_WEIGHTS, TREND_PROBABILITY_WEIGHTS, TREND_ACTOR
 from metadata.core.repo import MovieRepo, repo
 
 
-def calculate_meta_combined_score(
+def calculate_combined_score(
     imdb: float,
     rt_critic: float,
     rt_audience: float,
@@ -34,4 +34,7 @@ def calculate_probability_to_watch(title) -> float:
 
 def calculate_expected_grade():
     "compares movie to graded movies in the user_ratings and guess what the grade will be"
+    return "--"
+def calculate_weighted_total():
     pass
+ 

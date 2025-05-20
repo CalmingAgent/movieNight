@@ -9,12 +9,14 @@ import subprocess
 from sys import platform
 import tempfile
 import time
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import webbrowser
 
 from PySide6.QtCore    import Qt
 from PySide6.QtGui     import QPixmap, QPainter, QFont, QColor, QPalette
 from PySide6.QtWidgets import QApplication
+from metadata.api_clients import tmdb_client, yt_client
+from metadata.core import repo
 
 from .settings import LOG_PATH, ACCENT_COLOR
 
@@ -148,29 +150,6 @@ def throttle(min_delay: float = 1.0):
         return inner
     return wrap
        
-def trend_score(keyword: str) -> int | None:
-    """
-    Returns the 7-day average Google-Trends interest (0-100) for *keyword*.
-    Requires `npm i -g google-trends-api`.
-    """
-    node_script = f"""
-        const gtrends = require('google-trends-api');
-        gtrends.interestOverTime({{ keyword: "{keyword}", startTime: new Date(Date.now()-7*24*3600*1000) }})
-          .then(r => console.log(JSON.stringify(r)))
-          .catch(_ => process.exit(1));
-    """
-    with tempfile.NamedTemporaryFile("w+", suffix=".js", delete=False) as js:
-        js.write(node_script)
-    try:
-        raw = subprocess.check_output(["node", js.name], timeout=20)
-        obj = json.loads(raw)
-        points = [v['value'][0] for v in obj["default"]["timelineData"]]
-        return round(sum(points)/len(points))
-    except Exception:
-        return None
-    finally:
-        pathlib.Path(js.name).unlink(missing_ok=True)
-        
 def score_to_grade(score: float) -> str:
     bands = [
         ( 100, "S"), ( 97, "A+"), ( 92, "A"), ( 75, "A-"),
@@ -178,3 +157,49 @@ def score_to_grade(score: float) -> str:
         ( 48, "C+"), ( 42, "C"), ( 35, "C-"),
         ( 25, "D"), ( 15, "E"), (  0, "F"),
     ]
+
+# --- helpers ----------------------------------------------------------------
+_YT_RE = re.compile(r"(?:youtu\.be/|v=)([\w\-]{11})")
+
+def _valid(url: str | None) -> bool:
+    return url and _YT_RE.search(url)
+
+def _make_url(video_id: str) -> str:
+    return f"https://www.youtube.com/watch?v={video_id}"
+
+
+# --- public API --------------------------------------------------------------
+@throttle(min_delay=0.4)            # ⇠ stay well under 40 req / 10 s (TMDb)
+def locate_trailer( title: str) -> Tuple[str | None, str, float]:
+    """
+    Find a trailer URL for *title*.
+
+    *sheet* is accepted for backward-compatibility but ignored; DB now
+    stores only one `youtube_link` per movie.
+
+    Returns (url | None, source, confidence)
+    """
+    # 0. DB cache -------------------------------------------------------------
+    mid = repo.get_movie_id_by_title(title)
+    if mid:
+        url = repo.by_id(mid).youtube_link
+        if _valid(url):
+            return url, "db", 1.00
+
+    # 1. TMDb (exact) ---------------------------------------------------------
+    best = tmdb_client.fetch_videos_exact(title)
+    if best and _valid(best):
+        return best, "tmdb", 0.95
+
+    # 2. yt-dl on TMDb slug ---------------------------------------------------
+    if best := tmdb_client.try_slug_search(title):
+        vid = yt_client.search_first_match(best + " trailer", exact=True)
+        if vid:
+            return _make_url(vid), "yt_dl", 0.80
+
+    # 3. raw YouTube search ---------------------------------------------------
+    vid = yt_client.search_first_match(title + " trailer", exact=False, max_retries=3)
+    if vid:
+        return _make_url(vid), "youtube", 0.60
+
+    return None, "none", 0.0
