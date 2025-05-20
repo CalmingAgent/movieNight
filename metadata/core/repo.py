@@ -318,7 +318,8 @@ class MovieRepo:
     def movies_missing_trend() -> list[sqlite3.Row]:
         return execute("SELECT id FROM movies WHERE google_trend_score IS NULL").fetchall()
    
-   #Google trend helps 
+   #Google trend helps
+    @staticmethod 
     def trend_cache_get(term: str) -> int | None:
         """
         Return a cached 7-day average Google-Trend score for *term*
@@ -330,7 +331,7 @@ class MovieRepo:
         ).fetchone()
         return int(row["value"]) if row else None
 
-
+    @staticmethod
     def trend_cache_set(term: str, score: int) -> None:
         """
         Store today's trend *score* (0-100) for *term*.
@@ -338,5 +339,20 @@ class MovieRepo:
         execute(
             "INSERT OR REPLACE INTO trend_cache(term, as_of, value) VALUES (?,?,?)",
             (term, date.today(), str(score))
+        )
+        commit()
+        
+    @staticmethod
+    def link_movies_to_spreadsheet_theme(self, movie_ids: list[int], theme_id: int) -> None:
+        """
+        Insert (movie_id, theme_id) rows into movie_spreadsheet_themes, ignoring duplicates.
+        """
+        if not movie_ids:
+            return
+        params = [(mid, theme_id) for mid in movie_ids]
+        executemany(
+            "INSERT OR IGNORE INTO movie_spreadsheet_themes "
+            "(movie_id, spreadsheet_theme_id) VALUES (?,?)",
+            params,
         )
         commit()
