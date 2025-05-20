@@ -6,14 +6,10 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..settings          import GHIBLI_SHEET_PATH, SPREADSHEET_ID
 from ..utils             import locate_trailer, log_debug, open_url_host_browser
-from metadata import repo,  tmdb_client, omdb_client, yt_client
+from metadata import repo
 from movie_api.scrapers import IMDbScraper
 from metadata.analytics.update_service import enrich_movie, update_scores_and_trends   
 from movie_api import sheets_xlsx
-from metadata.analytics.scoring   import (
-    calculate_actor_trend_score, calculate_combined_score
-)
-
 
 # type alias for what we return to the GUI
 GenerateResult = Tuple[List[str], Dict[str, str | None]]
@@ -106,31 +102,36 @@ def update_data() -> None:
 
     touched: set[int] = set()      # movie-ids we’ll recalc at the end
 
-    theme_id = repo._ensure_spreadsheet_theme(SPREADSHEET_ID)
-    titles   = sheets_xlsx.get_movie_titles_from_sheet(GHIBLI_SHEET_PATH, SPREADSHEET_ID)
+     # handle every non-green tab separately
+    for tab in sheets_xlsx.get_non_green_tabs(SPREADSHEET_ID):
+        theme_id = repo._ensure_spreadsheet_theme(tab)
+        titles   = sheets_xlsx.get_movie_titles_from_sheet(GHIBLI_SHEET_PATH, tab)
 
-    # ---- find which titles already exist -----------------------
-    present = repo.titles_to_ids(titles)            # bulk SELECT
-    new_rows = [{"title": t} for t in titles if t not in present]
+        # bulk-lookup + bulk-insert
+        present  = repo.titles_to_ids(titles)
+        new_rows = [{"title": t} for t in titles if t not in present]
+        new_ids  = repo.bulk_insert_movies(new_rows)
+        present.update({r["title"]: mid for r, mid in zip(new_rows, new_ids)})
+        repo.link_movies_to_spreadsheet_theme(list(present.values()), theme_id)
 
-    # ---- insert newcomers in one executemany ------------------
-    new_ids  = repo.bulk_insert_movies(new_rows)
-    present.update({r["title"]: mid for r, mid in zip(new_rows, new_ids)})
+        # ---- per-movie metadata refresh ---------------------------
+        scraper = IMDbScraper(min_delay=1.5)  
+        for title, mid in present.items():
+            # 1. Always try to enrich *all* metadata
+            enrich_movie(mid, scraper)
 
-    # ---- link to spreadsheet theme (single executemany) -------
-    repo.executemany(
-        "INSERT OR IGNORE INTO movie_spreadsheet_themes "
-        "(movie_id, spreadsheet_theme_id) VALUES (?,?)",
-        [(mid, theme_id) for mid in present.values()]
-    )
-    repo.commit()
+            # 2. Always recompute scores & trends (they’re fast DB math anyway)
+            update_scores_and_trends(mid)
 
-    # ---- per-movie metadata refresh ---------------------------
-    for title, mid in present.items():
-        url, *_ = locate_trailer(title)
-        repo.update_youtube_link(mid, url)
-        update_scores_and_trends(mid)
-        touched.add(mid)
+            # 3. Trailer only if still missing
+            row = repo.by_id(mid)
+            if not row["youtube_link"]:
+                url, *_ = locate_trailer(title)
+                if url:
+                    repo.update_youtube_link(mid, url)
+
+                    update_scores_and_trends(mid)                # ratings + trends
+                    touched.add(mid)
 
     log_debug(f"Update data complete ({len(touched)} movies refreshed).")
     
@@ -169,14 +170,16 @@ class _MetaWorker(QObject):
         ids   = repo.movie_ids_sorted(resume_after=last)
         total = len(ids)
 
+        self.progress.emit(0, total)                          # show busy bar
+
         for i, mid in enumerate(ids, start=1):
             self.message.emit(repo.by_id(mid).title)
-            enrich_movie(mid, self.scraper)
+            enrich_movie(mid, self.scraper)                   # single API sweep
             _set_resume_point("meta_resume", mid)
             self.progress.emit(i, total)
 
-        # reset resume when done
-        _set_resume_point("meta_resume", 0)
+        _set_resume_point("meta_resume", 0)                   # clear resume
+
 
 
 class _URLWorker(QObject):
@@ -205,22 +208,15 @@ class _URLWorker(QObject):
         for i, row in enumerate(rows, start=1):
             mid, title = row["id"], row["title"]
             self.message.emit(title)
- 
-            url, *_ = locate_trailer(title)
+
+            url, *_ = locate_trailer(title)              # one lookup per movie
             if url:
                 repo.update_youtube_link(mid, url)
+
+            _set_resume_point("url_resume", mid)
             self.progress.emit(i, total)
- 
-            _set_resume_point("url_resume", mid)
 
-            url, *_ = locate_trailer(title)  # follows TMDb → yt_dl → YouTube
-            if url:
-                repo.update_youtube_link(mid, url)
-
-            _set_resume_point("url_resume", mid)
-            self.progress.emit(i + 1, total)
-
-        _set_resume_point("url_resume", 0)
+        _set_resume_point("url_resume", 0)               # clear when finished
 
 
 # ───────────────────────── Controller helpers exposed to UI ───────────────

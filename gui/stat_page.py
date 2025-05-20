@@ -2,7 +2,7 @@ from __future__ import annotations
 from PySide6.QtCore    import Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QProgressBar, QDialog, QDialogButtonBox
+    QProgressBar, QDialog, QDialogButtonBox, QGroupBox
 )
 
 # -------------------------------------------------------------------------
@@ -53,26 +53,36 @@ class StatsPage(QWidget):
         root = QVBoxLayout(self)
         root.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
-        # --- button row ----------------------------------------------------
-        btn_row = QHBoxLayout()
-        self.btn_meta      = QPushButton("Update metadata")
-        self.btn_urls      = QPushButton("Update URLs")
-        self.btn_meta_ctn  = QPushButton("Continue metadata")
-        self.btn_urls_ctn  = QPushButton("Continue URLs")
+        # ── groupbox with 4 buttons ---------------------------------------
+        box  = QGroupBox("Maintenance Tasks")
+        grid = QHBoxLayout(box)
+
+        self.btn_meta     = QPushButton("Update metadata")
+        self.btn_urls     = QPushButton("Update URLs")
+        self.btn_meta_ctn = QPushButton("Continue")
+        self.btn_urls_ctn = QPushButton("Continue")
+
+        # status labels (“42 / 156”) – start hidden
+        self.lbl_meta_st  = QLabel("", alignment=Qt.AlignLeft)
+        self.lbl_url_st   = QLabel("", alignment=Qt.AlignLeft)
 
         for b in (self.btn_meta, self.btn_urls, self.btn_meta_ctn, self.btn_urls_ctn):
-            b.setMinimumWidth(140)
+            b.setMinimumWidth(120)
             b.setAutoDefault(False)
-        # continue buttons start disabled
+
         self.btn_meta_ctn.setEnabled(False)
         self.btn_urls_ctn.setEnabled(False)
 
-        btn_row.addWidget(self.btn_meta)
-        btn_row.addWidget(self.btn_urls)
-        btn_row.addWidget(self.btn_meta_ctn)
-        btn_row.addWidget(self.btn_urls_ctn)
-        root.addLayout(btn_row)
+        # layout: [Full update]  |  [Continue]  [status]
+        grid.addWidget(self.btn_meta)
+        grid.addWidget(self.btn_meta_ctn)
+        grid.addWidget(self.lbl_meta_st)
+        grid.addSpacing(20)
+        grid.addWidget(self.btn_urls)
+        grid.addWidget(self.btn_urls_ctn)
+        grid.addWidget(self.lbl_url_st)
 
+        root.addWidget(box)
         self.setLayout(root)
 
     def _connect(self) -> None:
@@ -95,3 +105,14 @@ class StatsPage(QWidget):
         dlg = _ProgressDialog(title, self)
         dlg.show()
         return dlg
+        # These let the controller show “done / total” next to each Continue
+    
+    @Slot(int, int)
+    def set_meta_status(self, done: int, total: int) -> None:
+        txt = f"{done} / {total}" if total else ""
+        self.lbl_meta_st.setText(txt)
+
+    @Slot(int, int)
+    def set_url_status(self, done: int, total: int) -> None:
+        txt = f"{done} / {total}" if total else ""
+        self.lbl_url_st.setText(txt)
