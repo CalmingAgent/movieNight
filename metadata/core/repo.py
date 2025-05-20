@@ -6,7 +6,9 @@ All SQL lives here; other layers import this module instead of touching
 """
 
 from __future__ import annotations
+import sqlite3
 from typing import Any, Dict, List, Optional, Set
+from datetime import date
 
 from metadata.movie_night_db import execute, executemany, commit, connection
 from metadata.core.models import Movie
@@ -235,3 +237,106 @@ class MovieRepo:
             "SELECT combined_score FROM movies WHERE id=?", (movie_id,)
         ).fetchone()
         return row["combined_score"] if row else None
+    
+        # ───────────────────────────── bulk helpers ──────────────────────────
+    @staticmethod
+    def bulk_insert_movies(rows: List[Dict[str, Any]]) -> List[int]:
+        """Insert many movie dicts at once. Returns list of new row-ids.
+
+        Assumes every dict key ∈ `_ALLOWED_MOVIE_COLS`.
+        """
+        if not rows:
+            return []
+
+        cols = rows[0].keys()
+        ph   = ", ".join("?" * len(cols))
+        sql  = f"INSERT INTO movies ({', '.join(cols)}) VALUES ({ph})"
+
+        params = [tuple(r[c] for c in cols) for r in rows]
+        executemany(sql, params)
+        commit()
+
+        first_id = execute("SELECT last_insert_rowid()").fetchone()[0] - len(rows) + 1
+        return list(range(first_id, first_id + len(rows)))
+
+    @staticmethod
+    def titles_to_ids(titles: List[str]) -> Dict[str, int]:
+        """Return {title: id} for every title that already exists."""
+        if not titles:
+            return {}
+        q = ",".join("?" * len(titles))
+        rows = execute(f"SELECT id, title FROM movies WHERE title IN ({q})", tuple(titles)).fetchall()
+        return {r["title"]: r["id"] for r in rows}
+    
+    # ───────────────────────── kv  (resume points etc.) ───────────────────
+    @staticmethod
+    def get_kv(key: str) -> str | None:
+        row = execute("SELECT value FROM kv_store WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    @staticmethod
+    def set_kv(key: str, value: str) -> None:
+        execute(
+            "INSERT OR REPLACE INTO kv_store(key, value) VALUES(?,?)",
+            (key, value)
+        )
+        commit()
+
+    # ───────────────────────── bulk movie id helpers ─────────────────────
+    @staticmethod
+    def movie_ids_sorted(resume_after: int | None = None) -> list[int]:
+        if resume_after:
+            rows = execute(
+                "SELECT id FROM movies WHERE id>? ORDER BY id",
+                (resume_after,)
+            ).fetchall()
+        else:
+            rows = execute("SELECT id FROM movies ORDER BY id").fetchall()
+        return [r["id"] for r in rows]
+
+    @staticmethod
+    def movies_missing_trailer(resume_after: int | None = None):
+        sql = (
+            "SELECT id, title FROM movies "
+            "WHERE (youtube_link IS NULL OR youtube_link='') "
+        )
+        params = ()
+        if resume_after:
+            sql += "AND id>? "
+            params = (resume_after,)
+        rows = execute(sql + "ORDER BY id", params).fetchall()
+        return rows         # list[sqlite3.Row]
+    
+    # ratings helper for enrich_movie
+    @staticmethod
+    def current_ratings_dict(movie_id: int) -> Dict[str, float]:
+        rows = execute(
+            "SELECT source, score FROM ratings WHERE movie_id=?", (movie_id,)
+        ).fetchall()
+        return {r["source"]: r["score"] for r in rows}
+    
+    def movies_missing_trend() -> list[sqlite3.Row]:
+        return execute("SELECT id FROM movies WHERE google_trend_score IS NULL").fetchall()
+   
+   #Google trend helps 
+    def trend_cache_get(term: str) -> int | None:
+        """
+        Return a cached 7-day average Google-Trend score for *term*
+        or None if not in the cache for today.
+        """
+        row = execute(
+            "SELECT value FROM trend_cache WHERE term=? AND as_of=?",
+            (term, date.today())
+        ).fetchone()
+        return int(row["value"]) if row else None
+
+
+    def trend_cache_set(term: str, score: int) -> None:
+        """
+        Store today's trend *score* (0-100) for *term*.
+        """
+        execute(
+            "INSERT OR REPLACE INTO trend_cache(term, as_of, value) VALUES (?,?,?)",
+            (term, date.today(), str(score))
+        )
+        commit()

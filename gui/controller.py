@@ -1,87 +1,84 @@
 from __future__ import annotations
 import datetime, random, urllib.parse
-from pathlib import Path
-from typing  import Dict, List, Tuple
+from typing  import Dict, List, Tuple, Optional
 
-import openpyxl
-from PySide6.QtGui       import QDesktopServices
-from PySide6.QtCore      import QUrl
+from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from ..settings          import GHIBLI_SHEET_PATH, SPREADSHEET_ID
-from ..utils             import normalize, fuzzy_match, log_debug, open_url_host_browser
-from ..metadata.movie_night_db  import DB, Movie
-from ..metadata.api_clients.tmdb_client import tmdb_client
-from ..metadata.api_clients.omdb_client import omdb_client     
-from ..metadata import locate_trailer        # you already have this helper
-from ..movie_api import sheets_xlsx
+from ..utils             import locate_trailer, log_debug, open_url_host_browser
+from metadata import repo,  tmdb_client, omdb_client, yt_client
+from movie_api.scrapers import IMDbScraper
+from metadata.analytics.update_service import enrich_movie, update_scores_and_trends   
+from movie_api import sheets_xlsx
+from metadata.analytics.scoring   import (
+    calculate_actor_trend_score, calculate_combined_score
+)
 
 
 # type alias for what we return to the GUI
 GenerateResult = Tuple[List[str], Dict[str, str | None]]
 
-#This should only pull from spreadsheet_themes in the DB
 def generate_movies(sheet_name_input: str, attendee_count: int) -> GenerateResult:
     """
-    Core “pick movies” routine, decoupled from Qt slots.
+    Randomly choose *(attendee_count + 1)* movies linked to the given
+    spreadsheet tab **that already have a YouTube trailer**.
 
-    Returns:
-        (chosen_titles, {title: trailer_url_or_None})
+    Parameters
+    ----------
+    sheet_name_input
+        Name of the Google-Sheet tab (must exist in spreadsheet_themes).
+    attendee_count
+        Positive integer; we return N + 1 movies.
 
-    Raises:
-        ValueError with user-friendly .args[0] for any validation issue.
+    Returns
+    -------
+    chosen_titles
+        List of movie titles (length = attendee_count + 1).
+    trailer_map
+        Dict {title → youtube_link}.
     """
-    # ---- validation -------------------------------------------------
+    # ── validation ───────────────────────────────────────────────────
+    sheet = sheet_name_input.strip()
     if attendee_count <= 0:
         raise ValueError("Enter a positive attendee count.")
-
-    if not sheet_name_input.strip():
+    if not sheet:
         raise ValueError("Sheet name?")
 
-    if not Path(GHIBLI_SHEET_PATH).exists():
-        raise ValueError("Run ‘Update data’ first.")
-
-    # ---- open workbook & resolve sheet ------------------------------
-    wb   = openpyxl.load_workbook(GHIBLI_SHEET_PATH, read_only=True)
-    norm = {normalize(n): n for n in wb.sheetnames}
-    chosen_sheet = (
-        norm.get(normalize(sheet_name_input))
-        or norm.get(fuzzy_match(normalize(sheet_name_input), list(norm)))
-    )
-    if not chosen_sheet:
+    # ── candidate pool from DB ──────────────────────────────────────
+    movie_ids = repo.ids_for_sheet(sheet)
+    if not movie_ids:
         raise ValueError("Sheet not found.")
 
-    titles = [
-        r[0] for r in wb[chosen_sheet].iter_rows(min_row=1, max_col=1, values_only=True)
-        if r[0]
+    # fetch (mid, title, link) once – avoids per-movie queries later
+    rows = [
+        (mid,
+         (m := repo.by_id(mid)).title,
+         m.youtube_link)
+        for mid in movie_ids
     ]
-    if attendee_count + 1 > len(titles):
-        raise ValueError("Not enough movies on that sheet.")
+    pool = [(t, link) for _id, t, link in rows if link]   # keep only with trailer
 
-    # ---- pick and locate trailers -----------------------------------
-    picks = random.sample(titles, attendee_count + 1)
-    trailer_map: Dict[str, str | None] = {}
+    if attendee_count + 1 > len(pool):
+        raise ValueError("Not enough movies on that sheet with trailers.")
 
-    for title in picks:
-        # locate_trailer uses DB + TMDb + OMDb under the hood
-        url, _src, _ = locate_trailer(chosen_sheet, title)
-        trailer_map[title] = url
+    # ── random pick ─────────────────────────────────────────────────
+    chosen = random.sample(pool, attendee_count + 1)
+    chosen_titles = [t for t, _ in chosen]
+    trailer_map: Dict[str, str] = {t: link for t, link in chosen}
 
-    # ---- build & auto-open YT playlist ------------------------------
-    ids = [
-        url.split("v=")[-1].split("&")[0]
-        for url in trailer_map.values()
-        if url and "watch?v=" in url
-    ]
-    if ids:
-        playlist_link = (
+    # ── open YT playlist in host browser ────────────────────────────
+    video_ids = [link.split("v=")[-1].split("&")[0] for link in trailer_map.values()]
+    if video_ids:
+        playlist = (
             "https://www.youtube.com/watch_videos"
-            f"?video_ids={','.join(ids)}"
+            f"?video_ids={','.join(video_ids)}"
             f"&title={urllib.parse.quote_plus(f'Movie Night {datetime.date.today()}')}"
             "&feature=share"
         )
-        open_url_host_browser(playlist_link)
+        open_url_host_browser(playlist)
 
-    return picks, trailer_map
+    return chosen_titles, trailer_map
+
 # ------------------------------------------------------------------
 def add_remove_movie(current: list[str], pool: list[str], delta: int) -> list[str]:
     """
@@ -107,59 +104,147 @@ def update_data() -> None:
     # 1) ensure local XLSX
     sheets_xlsx.download_spreadsheet_as_xlsx(SPREADSHEET_ID, GHIBLI_SHEET_PATH)
 
-    touched_ids: set[int] = set()      # movie-ids we’ll recalc at the end
+    touched: set[int] = set()      # movie-ids we’ll recalc at the end
 
-    for sheet in sheets_xlsx.get_non_green_tabs(SPREADSHEET_ID):
+    theme_id = repo._ensure_spreadsheet_theme(SPREADSHEET_ID)
+    titles   = sheets_xlsx.get_movie_titles_from_sheet(GHIBLI_SHEET_PATH, SPREADSHEET_ID)
 
-        theme_id = DB._ensure_spreadsheet_theme(sheet)
+    # ---- find which titles already exist -----------------------
+    present = repo.titles_to_ids(titles)            # bulk SELECT
+    new_rows = [{"title": t} for t in titles if t not in present]
 
-        for title in sheets_xlsx.get_movie_titles_from_sheet(GHIBLI_SHEET_PATH, sheet):
+    # ---- insert newcomers in one executemany ------------------
+    new_ids  = repo.bulk_insert_movies(new_rows)
+    present.update({r["title"]: mid for r, mid in zip(new_rows, new_ids)})
 
-            mid  = DB.get_movie_id_by_title(title) or DB.add_movie({"title": title})
-            DB.link_movie_to_sheet_theme(mid, theme_id)
-            DB.upsert_trailer_url(sheet, title, None)
+    # ---- link to spreadsheet theme (single executemany) -------
+    repo.executemany(
+        "INSERT OR IGNORE INTO movie_spreadsheet_themes "
+        "(movie_id, spreadsheet_theme_id) VALUES (?,?)",
+        [(mid, theme_id) for mid in present.values()]
+    )
+    repo.commit()
 
-            # ---------------- current state ------------------------
-            mrow = DB.get_movie(mid)
-            trow = DB.get_trailer_url(sheet, title)
+    # ---- per-movie metadata refresh ---------------------------
+    for title, mid in present.items():
+        url, *_ = locate_trailer(title)
+        repo.update_youtube_link(mid, url)
+        update_scores_and_trends(mid)
+        touched.add(mid)
 
-            # ---------------- TMDb primary call --------------------
-            tm_meta = tmdb.fetch_metadata(title=title) or {}
-            mf      = tm_meta.get("movie_fields", {})
+    log_debug(f"Update data complete ({len(touched)} movies refreshed).")
+    
+# persistent resume state (store last movie_id checked)
+def _get_resume_point(kind: str) -> Optional[int]:
+    v = repo.get_kv(kind)
+    return int(v) if v else None
 
-            # trailer
-            if not trow and mf.get("youtube_link"):
-                DB.upsert_trailer_url(sheet, title, mf["youtube_link"])
+def _set_resume_point(kind: str, movie_id: int) -> None:
+    repo.set_kv(kind, str(movie_id))
 
-            # numeric & string fields
-            for fld in ("year", "release_window", "rating_cert", "origin_country",
-                        "duration_seconds", "box_office_actual", "franchise"):
-                if DB.is_movie_field_missing(mid, fld) and mf.get(fld):
-                    DB.update_movie_field(mid, fld, mf[fld])
 
-            # genres
-            for g in tm_meta.get("genres", []):
-                DB.link_movie_genre(mid, g)
+# ───────────────────────── Worker skeletons ───────────────────────────────
+class _MetaWorker(QObject):
+    progress  = Signal(int, int)
+    message   = Signal(str)
+    finished  = Signal(bool)
 
-            # ---------------- OMDb fallback (only if still missing) ----
-            # runtime
-            if DB.is_movie_field_missing(mid, "duration_seconds"):
-                rt = omdb_client.get_runtime_seconds(title=title)
-                if rt:
-                     DB.update_movie_field(mid, "duration_seconds", rt)
+    def __init__(self, full: bool):
+        super().__init__()
+        self.full = full
+        self.scraper = IMDbScraper(min_delay=1.5)
 
-            # box-office actual
-            if DB.is_movie_field_missing(mid, "box_office_actual"):
-                bo = omdb_client.get_boxoffice(title=title)
-                if bo:
-                    DB.update_movie_field(mid, "box_office_actual", bo)
+    @Slot()
+    def run(self):
+        try:
+            self._run()
+            self.finished.emit(True)
+        except Exception as e:
+            print("meta-worker error:", e)
+            self.finished.emit(False)
 
-            touched_ids.add(mid)
+    # actual job
+    def _run(self):
+        last  = _get_resume_point("meta_resume") if not self.full else None
+        ids   = repo.movie_ids_sorted(resume_after=last)
+        total = len(ids)
 
-    DB.conn.commit()
+        for i, mid in enumerate(ids, start=1):
+            self.message.emit(repo.by_id(mid).title)
+            enrich_movie(mid, self.scraper)
+            _set_resume_point("meta_resume", mid)
+            self.progress.emit(i, total)
 
-    # 2) compute ratings + trends for every touched movie
-    for mid in touched_ids:
-        Movie.from_id(mid).update_scores_and_trends()
+        # reset resume when done
+        _set_resume_point("meta_resume", 0)
 
-    log_debug(f"Update data complete ({len(touched_ids)} movies refreshed).")
+
+class _URLWorker(QObject):
+    progress = Signal(int, int)
+    message  = Signal(str)
+    finished = Signal(bool)
+
+    def __init__(self, full: bool):
+        super().__init__()
+        self.full = full
+
+    @Slot()
+    def run(self):
+        try:
+            self._run()
+            self.finished.emit(True)
+        except Exception as e:
+            print("url-worker error:", e)
+            self.finished.emit(False)
+
+    def _run(self):
+        last = _get_resume_point("url_resume") if not self.full else None
+        rows = repo.movies_missing_trailer(resume_after=last)
+        total = len(rows)
+
+        for i, row in enumerate(rows, start=1):
+            mid, title = row["id"], row["title"]
+            self.message.emit(title)
+ 
+            url, *_ = locate_trailer(title)
+            if url:
+                repo.update_youtube_link(mid, url)
+            self.progress.emit(i, total)
+ 
+            _set_resume_point("url_resume", mid)
+
+            url, *_ = locate_trailer(title)  # follows TMDb → yt_dl → YouTube
+            if url:
+                repo.update_youtube_link(mid, url)
+
+            _set_resume_point("url_resume", mid)
+            self.progress.emit(i + 1, total)
+
+        _set_resume_point("url_resume", 0)
+
+
+# ───────────────────────── Controller helpers exposed to UI ───────────────
+def _start_worker(worker: QObject, stat_page):
+    dlg = stat_page.open_progress(worker.__class__.__name__.replace("_", " "))
+    thr = QThread()
+    worker.moveToThread(thr)
+
+    worker.progress.connect(dlg.set_progress)
+    worker.message.connect(dlg.set_message)
+    worker.finished.connect(lambda ok: dlg.accept() if ok else dlg.reject())
+    worker.finished.connect(thr.quit)
+    worker.finished.connect(worker.deleteLater)
+    thr.finished.connect(thr.deleteLater)
+
+    thr.started.connect(worker.run)
+    thr.start()
+
+
+def start_update_metadata(full: bool, stat_page):
+    stat_page.enable_meta_continue(False)        # disable until worker finishes
+    _start_worker(_MetaWorker(full), stat_page)
+
+
+def start_update_urls(full: bool, stat_page):
+    stat_page.enable_url_continue(False)
+    _start_worker(_URLWorker(full), stat_page)

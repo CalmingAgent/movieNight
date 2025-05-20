@@ -10,6 +10,7 @@ from ...utils import log_debug, normalize, throttle
 from ...settings import TMDB_API_KEY
 from metadata.movie_night_db import MovieNightDB
 import international_reference
+from tmdb_client import TMDBClient
 
 client = TMDBClient()
 

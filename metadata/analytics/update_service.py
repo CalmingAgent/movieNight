@@ -1,62 +1,166 @@
 # update_scores_and_trends(movie_id)
+from __future__ import annotations
+from typing import Any, Dict, Optional
 
-from metadata.analytics.scoring import calculate_meta_combined_score
-from utils import trend_score
-from metadata.api_clients import tmdb_client as tmdb, omdb_client as omdb
+from metadata.analytics.scoring import calculate_combined_score, calculate_actor_trend_score
+from utils import trend_score, locate_trailer
+from metadata import (
+    repo, tmdb_client, omdb_client, yt_client          # shared singletons
+)
+from metadata.api_clients.errors import RateLimitReached #Not defined yet
 
 
-def recalculate_new_weighted_scores(title) -> None:
-    db.get_rating(title)
-    calculate_meta_combined_score(
-        imdb        = r.get("imdb", 0),
-        rt_critic   = r.get("rt_critic", 0),
-        rt_audience = r.get("rt_audience", 0),
-        metacritic  = r.get("metacritic", 0),
+# ───────────────────────────────────────────────────────────────────────────
+# 1 ▸ combined-score recomputation for ONE movie-id
+# ───────────────────────────────────────────────────────────────────────────
+def recalculate_combined_score(movie_id: int) -> None:
+    """
+    Re-calculate movies.combined_score from whatever rating rows exist.
+    """
+    r: Dict[str, float] = repo.current_ratings_dict(movie_id)   # {'IMDB': 78, …}
+    new_score = calculate_combined_score(
+        imdb        = r.get("IMDB", 0),
+        rt_critic   = r.get("RT_CRITIC", 0),
+        rt_audience = r.get("RT_AUDIENCE", 0),
+        metacritic  = r.get("METACRITIC", 0),
     )
-    db.update_movie_field(id, "combined_score", combined_score)
+    repo.update_movie_field(movie_id, "combined_score", new_score)
 
-def update_scores_and_trends(title) -> None:
-    """
-    1. Pull fresh TMDb user score, OMDb critic scores, Google trend,
-        actor popularity.
-    2. Upsert rating rows.
-    3. Recompute combined_score via calculate_meta_combined_score().
-    """
-    # --- TMDb user -------------------------------------------------
-    t = tmdb.fetch_user_rating(title)
-    if t:
-        db.upsert_rating(id, "TMDB", t[0]*10, t[1])  # scale 0-100
+# alias for back-compat with your old name
+recalculate_new_weighted_scores = recalculate_combined_score
 
-    # --- OMDb critic ----------------------------------------------
-    om = omdb.get_ratings(title=title)
-    if om:
+
+# ───────────────────────────────────────────────────────────────────────────
+# 2 ▸ full refresh of ratings + trends for ONE movie-id
+# ───────────────────────────────────────────────────────────────────────────
+def update_scores_and_trends(movie_id: int) -> None:
+    """
+    Refresh *all* numeric metadata for a movie:
+
+        TMDb user rating  → ratings table
+        OMDb critic scores → ratings table
+        Google trend      → movies.google_trend_score
+        Actor trend       → movies.actor_trend_score
+        Combined score    → movies.combined_score
+    """
+    m = repo.by_id(movie_id)
+    title = m.title
+
+    # ── TMDb user rating ---------------------------------------------------
+    if (t := tmdb_client.fetch_user_rating(title)):
+        repo.upsert_rating(movie_id, "TMDB", t[0] * 10, t[1])   # 0-100 scale
+
+    # ── OMDb critic scores -------------------------------------------------
+    if (om := omdb_client.get_ratings(title=title)):
         for src, val in om.items():
             if val is not None:
-                db.upsert_rating(id, src, val)
+                repo.upsert_rating(movie_id, src.upper(), val)
 
-    # --- Google trend (7-day avg) ---------------------------------
-    gt = trend_score(title)
-    if gt is not None:
-        db.update_movie_field(id, "google_trend_score", gt)
-        google_trend_score = gt
+    # ── Google trend (7-day avg) ------------------------------------------
+    if repo.is_movie_field_missing(movie_id, "google_trend_score"):
+        if (gt := trend_score(title)) is not None:
+            repo.update_movie_field(movie_id, "google_trend_score", gt)
 
-    # --- Actor trend (avg top-3 popularity) -----------------------
-    pops = tmdb.top_actor_popularity(title, top_n=3)
-    if pops:
-        avg = round(sum(pops)/len(pops), 2)
-        db.update_movie_field(id, "actor_trend_score", avg)
-        actor_trend_score = avg
+    # ── Actor trend (median popularity of billed actors) ------------------
+    if repo.is_movie_field_missing(movie_id, "actor_trend_score"):
+        if (ats := calculate_actor_trend_score(title)) is not None:
+            repo.update_movie_field(movie_id, "actor_trend_score", ats)
 
-    # --- final combined score ------------------------------------
-    recalculate_new_weighted_scores()
+    # ── Combined meta score ----------------------------------------------
+    recalculate_combined_score(movie_id)
 
-# ------------------------------------------------------------------
-def new_movies_trend_calc() -> None:
+
+# ───────────────────────────────────────────────────────────────────────────
+# 3 ▸ batch refresh for every movie missing a trend score
+# ───────────────────────────────────────────────────────────────────────────
+def refresh_missing_trends() -> None:
     """
-    For movies with NULL google_trend_score → fetch trend, actor popularity,
-    ratings, and compute combined score.
+    For rows where `google_trend_score` IS NULL:
+        → fetch trends, actor popularity, ratings, combined score.
     """
-    mids = [r["id"] for r in db.cur.execute(
-        "SELECT id FROM movies WHERE google_trend_score IS NULL").fetchall()]
+    mids = [
+        r["id"] for r in repo.movies_missing_trend()   # helper below
+    ]
     for mid in mids:
-        Movie.from_id(mid).update_scores_and_trends()
+        update_scores_and_trends(mid)
+
+def enrich_movie(movie_id: int, imdb_scraper=None) -> None:
+    """
+    Fill *missing* metadata fields for one movie row.
+
+    Priority order
+    --------------
+    1. TMDb   – full metadata + genres
+    2. OMDb   – runtime, box-office, plot
+    3. IMDb   – rating histogram (via scraper)
+    4. YouTube / yt-dl  – trailer URL
+    5. Trends  – Google & actor popularity
+    6. Combined score recalculation
+    """
+    m        = repo.by_id(movie_id)
+    title    = m.title
+
+    # ══════════ 1. TMDb ════════════════════════════════════════════════
+    try:
+        meta = tmdb_client.fetch_metadata(title)
+    except RateLimitReached:
+        raise                          # bubble up so worker pauses
+    if meta:
+        mf: Dict[str, Any] = meta.get("movie_fields", {})
+        for col, val in mf.items():
+            if val and repo.is_movie_field_missing(movie_id, col):
+                repo.update_movie_field(movie_id, col, val)
+
+        for g in meta.get("genres", []):
+            repo.link_movie_genre(movie_id, g)
+
+    # ══════════ 2. OMDb fallback ═══════════════════════════════════════
+    if repo.is_movie_field_missing(movie_id, "duration_seconds"):
+        rt = omdb_client.get_runtime_seconds(title=title)
+        if rt:
+            repo.update_movie_field(movie_id, "duration_seconds", rt)
+
+    if repo.is_movie_field_missing(movie_id, "box_office_actual"):
+        bo = omdb_client.get_boxoffice(title=title)
+        if bo:
+            repo.update_movie_field(movie_id, "box_office_actual", bo)
+
+    if repo.is_movie_field_missing(movie_id, "plot_desc"):
+        plot = omdb_client.get_plot(title=title)
+        if plot:
+            repo.update_movie_field(movie_id, "plot_desc", plot)
+
+    # ══════════ 3. IMDb scraper ════════════════════════════════════════
+    if imdb_scraper:
+        imdb_id = omdb_client.get_imdb_id(title=title)
+        if imdb_id:
+            data = imdb_scraper.fetch_all(imdb_id)    # throttled inside scraper
+            if data and "rating" in data:
+                repo.upsert_rating(movie_id, "IMDB", data["rating"] * 10)
+
+    # ══════════ 4. Trailer URL ════════════════════════════════════════
+    if repo.is_movie_field_missing(movie_id, "youtube_link"):
+        url, *_ = locate_trailer(title)
+        if url:
+            repo.update_youtube_link(movie_id, url)
+
+    # ══════════ 5. Trend scores ════════════════════════════════════════
+    if repo.is_movie_field_missing(movie_id, "google_trend_score"):
+        gt = repo.fetch_google_trend(title)           # implement in repo
+        if gt is not None:
+            repo.update_movie_field(movie_id, "google_trend_score", gt)
+
+    if repo.is_movie_field_missing(movie_id, "actor_trend_score"):
+        ats = calculate_actor_trend_score(title)
+        if ats is not None:
+            repo.update_movie_field(movie_id, "actor_trend_score", ats)
+
+    # ══════════ 6. Combined score ══════════════════════════════════════
+    rdict = repo.current_ratings_dict(movie_id)        # NEW helper → repo
+    score = calculate_combined_score(
+        imdb        = rdict.get("IMDB", 0),
+        rt_critic   = rdict.get("RT_CRITIC", 0),
+        rt_audience = rdict.get("RT_AUDIENCE", 0),
+        metacritic  = rdict.get("METACRITIC", 0),
+    )
+    repo.update_movie_field(movie_id, "combined_score", score)

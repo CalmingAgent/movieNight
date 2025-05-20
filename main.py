@@ -55,7 +55,6 @@ def main() -> None:
         worker.finished.connect(worker.deleteLater)
         thr.finished.connect(thr.deleteLater)
 
-        # (optional) re-enable “Generate” button once sync ends
         worker.finished.connect(lambda ok: window.setEnabled(True))
         window.setEnabled(False)     # grey-out while updating
         thr.start()
