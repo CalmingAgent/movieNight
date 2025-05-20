@@ -10,8 +10,11 @@ from PySide6.QtWidgets import (
 from ..settings        import ICON
 from .movie_card      import MovieCard
 from ..utils           import make_number_pixmap
-from ..metadata.service         import calculate_group_similarity, calculate_weighted_totals
-from .button_logic    import generate_movies
+from metadata import repo
+from metadata.analytics.similarity import calculate_similarity  
+from metadata.analytics.scoring    import calculate_weighted_totals, calculate_combined_score, calculate_probability_to_watch, calculate_expected_grade
+from .controller                   import generate_movies
+from itertools import combinations
 
 
 class PickerPage(QWidget):
@@ -36,9 +39,14 @@ class PickerPage(QWidget):
         self.attendee_input = QLineEdit(placeholderText="# attendees")
         self.sheet_input    = QLineEdit(placeholderText="Sheet name")
         self.generate_btn   = QPushButton("Generate Movies")
-        self.update_btn     = QPushButton("Update URLs")
+        self.update_btn     = QPushButton("Update Data")
+        self.btn_plus_one   = QPushButton("+1")
+        self.btn_minus_one  = QPushButton("-1")
+        for b in (self.btn_minus_one, self.btn_plus_one):
+            b.setFixedWidth(28)
+        
 
-        for btn in (self.generate_btn, self.update_btn):
+        for btn in (self.generate_btn, self.update_btn, self.btn_minus_one, self.btn_plus_one):
             btn.setAutoDefault(False)
             btn.setFlat(True)
             controls.addWidget(btn)
@@ -104,6 +112,8 @@ class PickerPage(QWidget):
         self.update_btn.clicked.connect(self.main_window._on_update)
         self.attendee_input.returnPressed.connect(self.main_window._on_generate)
         self.sheet_input.returnPressed.connect(self.main_window._on_generate)
+        self.btn_plus_one.clicked.connect(lambda: self.main_window._on_add_remove(+1))
+        self.btn_minus_one.clicked.connect(lambda: self.main_window._on_add_remove(-1))
 
     def display_movies(self, titles: list[str], trailer_map: dict[str, str]):
         # Clear old cards
@@ -121,11 +131,27 @@ class PickerPage(QWidget):
 
         # Populate
         for idx, title in enumerate(titles):
-            url  = trailer_map.get(title, "")
-            prob = calculate_group_similarity([title])  # or movie_probability
-            card = MovieCard(title, url, prob, self)
-            row, col = divmod(idx, cols)
-            self.grid_layout.addWidget(card, row, col)
+            url   = trailer_map.get(title, "")
+
+            # --- fetch movie row once ----------------------------------
+            mid   = repo.get_movie_id_by_title(title)
+            row   = repo.by_id(mid) if mid else None
+
+            # probability (0-1 → float)
+            prob  = calculate_probability_to_watch([title])
+
+            # expected grade (A, B+, …); stub returns "—" if not implemented
+            grade = calculate_expected_grade(title)        
+
+            # duration in seconds (None falls back to "—" in MovieCard)
+            dur_s = row["duration_seconds"] if row else None
+
+            # create the card with new signature
+            card = MovieCard(title, url, prob, grade, dur_s, self)
+
+            # place in grid
+            r, c = divmod(idx, cols)
+            self.grid_layout.addWidget(card, r, c)
 
         # Random direction + number
         direction = random.choice(self.DIRECTIONS)
@@ -146,7 +172,7 @@ class PickerPage(QWidget):
         self.number_label.show()
 
         # Update stats bar
-        sim_pct = int(calculate_group_similarity(titles) * 100)
+        sim_pct = int(calculate_similarity(titles) * 100)
         wt_score = calculate_weighted_totals(titles) * 100
         self.similarity_label.setText(f"Similarity: {sim_pct}%")
         self.similarity_bar.setValue(sim_pct)
