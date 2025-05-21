@@ -1,6 +1,6 @@
 from __future__ import annotations
-from PySide6.QtCore    import Qt, QPropertyAnimation
-from PySide6.QtWidgets import (
+from PySide6.QtCore    import Qt, QPropertyAnimation # type: ignore
+from PySide6.QtWidgets import ( # type: ignore
     QFrame, QLabel, QVBoxLayout, QHBoxLayout, QGraphicsDropShadowEffect
 )
 

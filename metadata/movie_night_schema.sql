@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS movies (
     id INTEGER PRIMARY KEY,
+    tmdb_id INTEGER UNIQUE,
     title TEXT NOT NULL,
     plot_desc TEXT,
     year INTEGER,
