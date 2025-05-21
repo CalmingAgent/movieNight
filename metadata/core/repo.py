@@ -152,9 +152,9 @@ class MovieRepo:
     @staticmethod
     def _ensure_genre(name: str) -> int:
         """Return genre-id, inserting a new row if needed."""
-        gid = execute("SELECT id FROM genres WHERE name=?", (name,)).fetchone()
-        if gid:
-            return gid["id"]
+        row = execute("SELECT id FROM genres WHERE name=?", (name,)).fetchone()
+        if row:
+         return row["id"]
         cur = execute("INSERT INTO genres(name) VALUES(?)", (name,))
         commit()
         return cur.lastrowid

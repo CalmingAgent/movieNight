@@ -1,7 +1,7 @@
 import random
 
-from PySide6.QtCore    import Qt, Slot
-from PySide6.QtWidgets import (
+from PySide6.QtCore    import Qt, Slot # type: ignore
+from PySide6.QtWidgets import ( # type: ignore
     QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton,
     QScrollArea, QWidgetItem, QGridLayout, QProgressBar, QLabel,
     QSizePolicy, QDialog, QCheckBox, QDialogButtonBox, QMessageBox

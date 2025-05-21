@@ -12,9 +12,9 @@ import time
 from typing import Optional, List, Tuple
 import webbrowser
 
-from PySide6.QtCore    import Qt
-from PySide6.QtGui     import QPixmap, QPainter, QFont, QColor, QPalette
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore    import Qt # type: ignore
+from PySide6.QtGui     import QPixmap, QPainter, QFont, QColor, QPalette # type: ignore
+from PySide6.QtWidgets import QApplication # type: ignore
 from metadata.api_clients import tmdb_client, yt_client
 from metadata.core import repo
 

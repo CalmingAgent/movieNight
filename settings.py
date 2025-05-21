@@ -1,7 +1,7 @@
 from pathlib import Path
 import os
 from dotenv import load_dotenv
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QIcon # type: ignore
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -32,7 +32,7 @@ LOG_PATH            = BASE_DIR / "trailer_debug.log"
 AUTO_UPDATE_SCRIPT  = BASE_DIR / "autoUpdate.py"
 GOOGLE_SERVICE_ACCOUNT_FILE = BASE_DIR / "service_secret.json"
 DATABASE_PATH       = BASE_DIR / "movie_night.sqlite"
-SCHMA_PATH          = BASE_DIR / "movie_night_schema.sql"
+SCHEMA_PATH          = BASE_DIR / "movie_night_schema.sql"
 GRADED_MOVIES       = "seen"
 
 
