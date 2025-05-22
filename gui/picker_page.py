@@ -1,21 +1,21 @@
 import random
-
-from PySide6.QtCore    import Qt, Slot # type: ignore
-from PySide6.QtWidgets import ( # type: ignore
+from PySide6.QtCore    import Qt, Slot  # type: ignore
+from PySide6.QtWidgets import (         # type: ignore
     QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, QPushButton,
-    QScrollArea, QWidgetItem, QGridLayout, QProgressBar, QLabel,
+    QScrollArea, QGridLayout, QProgressBar, QLabel,
     QSizePolicy, QDialog, QCheckBox, QDialogButtonBox, QMessageBox
 )
 
-from ..settings        import ICON
-from .movie_card      import MovieCard
-from ..utils           import make_number_pixmap
-from metadata import repo
-from metadata.analytics.similarity import calculate_similarity  
-from metadata.analytics.scoring    import calculate_weighted_totals, calculate_combined_score, calculate_probability_to_watch, calculate_expected_grade
-from .controller                   import generate_movies
-from itertools import combinations
-
+from ..settings import ICON, ACCENT_COLOR
+from .movie_card import MovieCard
+from ..utils      import make_number_pixmap
+from metadata     import repo
+from metadata.analytics.similarity import calculate_similarity
+from metadata.analytics.scoring    import (
+    calculate_weighted_totals,
+    calculate_probability_to_watch,
+    calculate_expected_grade,
+)
 
 class PickerPage(QWidget):
     DIRECTIONS = ["Clockwise", "Counter-Clockwise"]
@@ -28,6 +28,7 @@ class PickerPage(QWidget):
 
         self.direction_label.hide()
         self.number_label.hide()
+        self._last_titles: list[str] = []  # initialize here
 
     def _build_ui(self):
         main_layout = QHBoxLayout(self)
@@ -44,8 +45,8 @@ class PickerPage(QWidget):
         self.btn_minus_one  = QPushButton("-1")
         for b in (self.btn_minus_one, self.btn_plus_one):
             b.setFixedWidth(28)
-        
 
+        # hook up +1/–1 and main buttons
         for btn in (self.generate_btn, self.update_btn, self.btn_minus_one, self.btn_plus_one):
             btn.setAutoDefault(False)
             btn.setFlat(True)
@@ -54,7 +55,7 @@ class PickerPage(QWidget):
         controls.insertWidget(0, self.attendee_input)
 
         # Stats card
-        stats_card = QWidget()
+        stats_card   = QWidget()
         stats_layout = QVBoxLayout(stats_card)
         stats_layout.setContentsMargins(8, 8, 8, 8)
         stats_layout.setSpacing(4)
@@ -65,11 +66,11 @@ class PickerPage(QWidget):
         self.similarity_label = QLabel("Similarity: —", alignment=Qt.AlignCenter)
         self.similarity_label.setProperty("class", "StatsValue")
 
-        self.similarity_bar   = QProgressBar()
+        self.similarity_bar = QProgressBar()
         self.similarity_bar.setRange(0, 100)
         self.similarity_bar.setTextVisible(False)
 
-        self.weighted_label   = QLabel("Weighted Score: —", alignment=Qt.AlignCenter)
+        self.weighted_label = QLabel("Weighted Score: —", alignment=Qt.AlignCenter)
         self.weighted_label.setProperty("class", "StatsValue")
 
         for w in (header, self.similarity_label, self.similarity_bar, self.weighted_label):
@@ -114,66 +115,68 @@ class PickerPage(QWidget):
         self.sheet_input.returnPressed.connect(self.main_window._on_generate)
         self.btn_plus_one.clicked.connect(lambda: self.main_window._on_add_remove(+1))
         self.btn_minus_one.clicked.connect(lambda: self.main_window._on_add_remove(-1))
+        # **new**:
+        self.report_btn.clicked.connect(self._open_report_dialog)
 
     def display_movies(self, titles: list[str], trailer_map: dict[str, str]):
-        # Clear old cards
+        # remember for “Report Trailers”
+        self._last_titles = titles.copy()
+        self.report_btn.setEnabled(True)
+
+        # clear…
         while self.grid_layout.count():
             item = self.grid_layout.takeAt(0)
             if widget := item.widget():
                 widget.deleteLater()
 
-        # Compute columns
+        # figure out cols…
         card_w  = 200
         margins = self.grid_layout.contentsMargins()
         spacing = self.grid_layout.horizontalSpacing()
         avail   = self.scroll_area.viewport().width() - margins.left() - margins.right()
         cols    = max(1, (avail + spacing) // (card_w + spacing))
 
-        # Populate
-        for idx, title in enumerate(titles):
-            url   = trailer_map.get(title, "")
+        # map titles → Movie objects once
+        movies = []
+        for t in titles:
+            mid = repo.id_by_title(t)
+            if mid is not None:
+                movies.append(repo.by_id(mid))
 
-            # --- fetch movie row once ----------------------------------
-            mid   = repo.get_movie_id_by_title(title)
-            row   = repo.by_id(mid) if mid else None
+        # populate grid
+        for idx, movie in enumerate(movies):
+            url   = trailer_map.get(movie.title, "")
+            prob  = calculate_probability_to_watch([movie])
+            grade = calculate_expected_grade([movie])
+            dur_s = movie.duration_seconds
+            card  = MovieCard(movie.title, url, prob, grade, dur_s, self)
 
-            # probability (0-1 → float)
-            prob  = calculate_probability_to_watch([title])
-
-            # expected grade (A, B+, …); stub returns "—" if not implemented
-            grade = calculate_expected_grade(title)        
-
-            # duration in seconds (None falls back to "—" in MovieCard)
-            dur_s = row["duration_seconds"] if row else None
-
-            # create the card with new signature
-            card = MovieCard(title, url, prob, grade, dur_s, self)
-
-            # place in grid
             r, c = divmod(idx, cols)
             self.grid_layout.addWidget(card, r, c)
 
-        # Random direction + number
-        direction = random.choice(self.DIRECTIONS)
-        icon_map  = {
+        # …and show direction/number
+        direction    = random.choice(self.DIRECTIONS)
+        icon_map     = {
             "Clockwise":          "arrow-clockwise",
             "Counter-Clockwise":  "arrow-counterclockwise",
         }
-        icon_name     = icon_map[direction]
-        max_number    = int(self.attendee_input.text() or "1")
-        random_number = random.randint(1, max_number)
-        side = min(self.direction_label.width(), self.direction_label.height(), 124)
+        arrow_name   = icon_map[direction]
+        max_attendees = int(self.attendee_input.text() or "1")
+        rand_num     = random.randint(1, max_attendees)
+        side         = min(self.direction_label.width(),
+                           self.direction_label.height(), 124)
 
-        arrow_pix   = ICON(icon_name).pixmap(side, side)
-        number_pix  = make_number_pixmap(random_number, size=side)
+        arrow_pix  = ICON(arrow_name).pixmap(side, side)
+        number_pix = make_number_pixmap(rand_num, size=side)
         self.direction_label.setPixmap(arrow_pix)
         self.number_label.setPixmap(number_pix)
         self.direction_label.show()
         self.number_label.show()
 
-        # Update stats bar
-        sim_pct = int(calculate_similarity(titles) * 100)
-        wt_score = calculate_weighted_totals(titles) * 100
+        # now the group‐stats
+        sim_pct  = int(calculate_similarity(movies) * 100)
+        wt_score = calculate_weighted_totals(movies) * 100
+
         self.similarity_label.setText(f"Similarity: {sim_pct}%")
         self.similarity_bar.setValue(sim_pct)
         self.weighted_label.setText(f"Weighted Score: {wt_score:.1f}")
@@ -183,8 +186,8 @@ class PickerPage(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle("Report Trailers")
         layout = QVBoxLayout(dialog)
-        boxes = [QCheckBox(t) for t in getattr(self, "_last_titles", [])]
-        for cb in boxes:
+        for t in self._last_titles:
+            cb = QCheckBox(t)
             layout.addWidget(cb)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(dialog.accept)
@@ -192,6 +195,5 @@ class PickerPage(QWidget):
         layout.addWidget(bb)
 
         if dialog.exec() == QDialog.Accepted:
-            # handle reported titles
-            reported = [cb.text() for cb in boxes if cb.isChecked()]
+            reported = [cb.text() for cb in dialog.findChildren(QCheckBox) if cb.isChecked()]
             QMessageBox.information(self, "Reported", f"Thanks for reporting: {', '.join(reported)}")
