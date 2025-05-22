@@ -1,5 +1,6 @@
 # expected_grade(), watch_probability()
 
+import random
 from typing import Dict
 from settings import META_SCORE_WEIGHTS, TREND_PROBABILITY_WEIGHTS, TREND_ACTOR
 from metadata.core.repo import MovieRepo, repo
@@ -36,5 +37,5 @@ def calculate_expected_grade():
     "compares movie to graded movies in the user_ratings and guess what the grade will be"
     return "--"
 def calculate_weighted_total():
-    pass
+    return random(0,100)
  

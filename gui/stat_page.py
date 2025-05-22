@@ -43,6 +43,7 @@ class StatsPage(QWidget):
     # UI requests emitted to MainWindow → controller.py
     request_update_meta   = Signal(bool)   # full = True / continue = False
     request_update_urls   = Signal(bool)
+    request_collect_data = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -89,7 +90,7 @@ class StatsPage(QWidget):
     def _connect(self) -> None:
         self.btn_meta.clicked.connect(lambda: self.request_update_meta.emit(True))
         self.btn_urls.clicked.connect(lambda: self.request_update_urls.emit(True))
-        self.btn_collect.clicked.connect(lambda: self.request_collect.emit(True))
+        self.btn_collect.clicked.connect(lambda: self.request_update_collect.emit(True))
         self.btn_meta_ctn.clicked.connect(lambda: self.request_update_meta.emit(False))
         self.btn_urls_ctn.clicked.connect(lambda: self.request_update_urls.emit(False))
 

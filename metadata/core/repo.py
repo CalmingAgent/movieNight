@@ -136,7 +136,7 @@ class MovieRepo:
             "WHERE mt.movie_id=?", (movie_id,)
         ).fetchall()
         return {r["name"] for r in rows}
-
+    @staticmethod
     def get_youtube_link(movie_id: int) -> str | None:
         row = execute(
             "SELECT youtube_link FROM movies WHERE id=?", (movie_id,)
@@ -181,6 +181,14 @@ class MovieRepo:
         cur = execute("INSERT INTO spreadsheet_themes(name) VALUES(?)", (name,))
         commit()
         return cur.lastrowid
+    
+    @staticmethod
+    def ensure_spreadsheet_theme(name: str) -> int:
+        """
+        Public alias for `_ensure_spreadsheet_theme`.
+        Returns the spreadsheet_theme id, creating it if needed.
+        """
+        return MovieRepo._ensure_spreadsheet_theme(name)
 
     @staticmethod
     def link_movie_to_sheet_theme(movie_id: int, sheet: str) -> None:
@@ -314,7 +322,7 @@ class MovieRepo:
             "SELECT source, score FROM ratings WHERE movie_id=?", (movie_id,)
         ).fetchall()
         return {r["source"]: r["score"] for r in rows}
-    
+    @staticmethod
     def movies_missing_trend() -> list[sqlite3.Row]:
         return execute("SELECT id FROM movies WHERE google_trend_score IS NULL").fetchall()
    
@@ -343,7 +351,7 @@ class MovieRepo:
         commit()
         
     @staticmethod
-    def link_movies_to_spreadsheet_theme(self, movie_ids: list[int], theme_id: int) -> None:
+    def link_movies_to_spreadsheet_theme(movie_ids: list[int], theme_id: int) -> None:
         """
         Insert (movie_id, theme_id) rows into movie_spreadsheet_themes, ignoring duplicates.
         """
@@ -366,3 +374,9 @@ class MovieRepo:
         return execute(
             "SELECT COUNT(*) AS n FROM movies WHERE youtube_link IS NULL OR youtube_link=''"
         ).fetchone()["n"]
+        
+    @staticmethod
+    def id_by_tmdb(tmdb_id: int) -> int | None:
+        """Return local movie_id for a given TMDb external id, if any."""
+        row = execute("SELECT id FROM movies WHERE tmdb_id=?", (tmdb_id,)).fetchone()
+        return row["id"] if row else None

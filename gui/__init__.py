@@ -9,20 +9,22 @@ All Qt widgets, pages and controllers.
     from gui import MainWindow, generate_movies
 """
 
-# ── controllers ──────────────────────────────────────────────────────────
-from .controller import generate_movies, update_data
-
-# ── widgets / pages ──────────────────────────────────────────────────────
-from .main_window import MainWindow
-from .movie_card  import MovieCard
-from .picker_page import PickerPage
-from .stat_page   import StatsPage
+from .controller import (
+    generate_movies,
+    add_remove_movie,
+    update_data,              # small sheet sync
+    start_update_metadata,    # bulk TMDb/OMDb/IMDb scrape
+    start_update_urls,        # bulk trailer‐URL fixup
+    start_collect_data,       # bulk data collection stub
+)
+from .main_window  import MainWindow
+from .picker_page  import PickerPage
+from .movie_card   import MovieCard
+from .stat_page    import StatsPage
 
 __all__ = [
-    "generate_movies",
+    "generate_movies", "add_remove_movie",
     "update_data",
-    "MainWindow",
-    "MovieCard",
-    "PickerPage",
-    "StatsPage",
+    "start_update_metadata", "start_update_urls", "start_collect_data",
+    "MainWindow", "PickerPage", "MovieCard", "StatsPage",
 ]

@@ -237,6 +237,15 @@ class TMDBClient:
                     if rd["type"] == release_type and rd["certification"]:
                         return rd["certification"]
         return None
+    
+    def get_countries(self) -> list[dict]:
+        """
+        Return the list of all TMDb-supported origin countries:
+        [{ "iso_3166_1": "...", "english_name": "..." }, …]
+        """
+        resp = self._get("configuration/countries")   # your internal GET wrapper
+        resp.raise_for_status()
+        return resp.json()    
 
 import sqlite3
 from ...settings import DATABASE_PATH
