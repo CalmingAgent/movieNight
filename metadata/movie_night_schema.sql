@@ -1,11 +1,12 @@
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
-    name TEXT UNIQUE NOT NULL,
+    name TEXT  NOT NULL,
     attendance_count INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS movies (
     id INTEGER PRIMARY KEY,
+    tmdb_id INTEGER UNIQUE,
     title TEXT NOT NULL,
     plot_desc TEXT,
     year INTEGER,

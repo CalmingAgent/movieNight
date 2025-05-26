@@ -1,6 +1,6 @@
 from __future__ import annotations
-from PySide6.QtCore    import Qt, Signal, Slot
-from PySide6.QtWidgets import (
+from PySide6.QtCore    import Qt, Signal, Slot # type: ignore
+from PySide6.QtWidgets import ( # type: ignore
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QProgressBar, QDialog, QDialogButtonBox, QGroupBox
 )
@@ -43,6 +43,7 @@ class StatsPage(QWidget):
     # UI requests emitted to MainWindow → controller.py
     request_update_meta   = Signal(bool)   # full = True / continue = False
     request_update_urls   = Signal(bool)
+    request_collect_data = Signal(bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -61,6 +62,7 @@ class StatsPage(QWidget):
         self.btn_urls     = QPushButton("Update URLs")
         self.btn_meta_ctn = QPushButton("Continue")
         self.btn_urls_ctn = QPushButton("Continue")
+        self.btn_collect  = QPushButton("Collect Data")
 
         # status labels (“42 / 156”) – start hidden
         self.lbl_meta_st  = QLabel("", alignment=Qt.AlignLeft)
@@ -88,6 +90,7 @@ class StatsPage(QWidget):
     def _connect(self) -> None:
         self.btn_meta.clicked.connect(lambda: self.request_update_meta.emit(True))
         self.btn_urls.clicked.connect(lambda: self.request_update_urls.emit(True))
+        self.btn_collect.clicked.connect(lambda: self.request_update_collect.emit(True))
         self.btn_meta_ctn.clicked.connect(lambda: self.request_update_meta.emit(False))
         self.btn_urls_ctn.clicked.connect(lambda: self.request_update_urls.emit(False))
 

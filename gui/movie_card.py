@@ -1,6 +1,6 @@
 from __future__ import annotations
-from PySide6.QtCore    import Qt, QPropertyAnimation
-from PySide6.QtWidgets import (
+from PySide6.QtCore    import Qt, QPropertyAnimation # type: ignore
+from PySide6.QtWidgets import ( # type: ignore
     QFrame, QLabel, QVBoxLayout, QHBoxLayout, QGraphicsDropShadowEffect
 )
 
@@ -16,7 +16,7 @@ class MovieCard(QFrame):
         title: str,
         trailer_url: str | None,
         probability: float,
-        grade: str,
+        expected_grade: str,
         duration_seconds: int | None,
         parent=None,
     ):
@@ -56,7 +56,7 @@ class MovieCard(QFrame):
         )
 
         # expected grade (center)
-        grade_lbl = QLabel(grade or "—", alignment=Qt.AlignCenter)
+        grade_lbl = QLabel(expected_grade or "—", alignment=Qt.AlignCenter)
         grade_lbl.setStyleSheet("font-weight:bold;")
 
         # duration (right)

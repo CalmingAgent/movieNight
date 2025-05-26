@@ -2,7 +2,7 @@ from __future__ import annotations
 import datetime, random, urllib.parse
 from typing  import Dict, List, Tuple, Optional
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QObject, QThread
 
 from ..settings          import GHIBLI_SHEET_PATH, SPREADSHEET_ID
 from ..utils             import locate_trailer, log_debug, open_url_host_browser
@@ -10,6 +10,7 @@ from metadata import repo
 from movie_api.scrapers import IMDbScraper
 from metadata.analytics.update_service import enrich_movie, update_scores_and_trends   
 from movie_api import sheets_xlsx
+from workers import _MetaWorker, _CollectWorker, _URLWorker
 
 # type alias for what we return to the GUI
 GenerateResult = Tuple[List[str], Dict[str, str | None]]
@@ -91,134 +92,36 @@ def add_remove_movie(current: list[str], pool: list[str], delta: int) -> list[st
     return lst
 
 def update_data() -> None:
-    """
-    • Sync spreadsheet rows with DB
-    • Fill trailer + full metadata:
-        TMDb first → OMDb fills remaining blanks
-    • Re-compute ratings, trends, combined_score for touched movies
-    """
-    # 1) ensure local XLSX
     sheets_xlsx.download_spreadsheet_as_xlsx(SPREADSHEET_ID, GHIBLI_SHEET_PATH)
+    touched: set[int] = set()
 
-    touched: set[int] = set()      # movie-ids we’ll recalc at the end
-
-     # handle every non-green tab separately
     for tab in sheets_xlsx.get_non_green_tabs(SPREADSHEET_ID):
-        theme_id = repo._ensure_spreadsheet_theme(tab)
+        theme_id = repo.ensure_spreadsheet_theme(tab)
         titles   = sheets_xlsx.get_movie_titles_from_sheet(GHIBLI_SHEET_PATH, tab)
 
-        # bulk-lookup + bulk-insert
         present  = repo.titles_to_ids(titles)
         new_rows = [{"title": t} for t in titles if t not in present]
         new_ids  = repo.bulk_insert_movies(new_rows)
         present.update({r["title"]: mid for r, mid in zip(new_rows, new_ids)})
         repo.link_movies_to_spreadsheet_theme(list(present.values()), theme_id)
 
-        # ---- per-movie metadata refresh ---------------------------
-        scraper = IMDbScraper(min_delay=1.5)  
+        scraper = IMDbScraper(min_delay=1.5)   # once per tab
         for title, mid in present.items():
-            # 1. Always try to enrich *all* metadata
+            # full enrichment + recalc
             enrich_movie(mid, scraper)
-
-            # 2. Always recompute scores & trends (they’re fast DB math anyway)
             update_scores_and_trends(mid)
 
-            # 3. Trailer only if still missing
-            row = repo.by_id(mid)
-            if not row["youtube_link"]:
+            movie = repo.by_id(mid)
+            if not movie.youtube_link:
                 url, *_ = locate_trailer(title)
                 if url:
                     repo.update_youtube_link(mid, url)
 
-                    update_scores_and_trends(mid)                # ratings + trends
-                    touched.add(mid)
+            touched.add(mid)
 
     log_debug(f"Update data complete ({len(touched)} movies refreshed).")
-    
-# persistent resume state (store last movie_id checked)
-def _get_resume_point(kind: str) -> Optional[int]:
-    v = repo.get_kv(kind)
-    return int(v) if v else None
 
-def _set_resume_point(kind: str, movie_id: int) -> None:
-    repo.set_kv(kind, str(movie_id))
-
-
-# ───────────────────────── Worker skeletons ───────────────────────────────
-class _MetaWorker(QObject):
-    progress  = Signal(int, int)
-    message   = Signal(str)
-    finished  = Signal(bool)
-
-    def __init__(self, full: bool):
-        super().__init__()
-        self.full = full
-        self.scraper = IMDbScraper(min_delay=1.5)
-
-    @Slot()
-    def run(self):
-        try:
-            self._run()
-            self.finished.emit(True)
-        except Exception as e:
-            print("meta-worker error:", e)
-            self.finished.emit(False)
-
-    # actual job
-    def _run(self):
-        last  = _get_resume_point("meta_resume") if not self.full else None
-        ids   = repo.movie_ids_sorted(resume_after=last)
-        total = len(ids)
-
-        self.progress.emit(0, total)                          # show busy bar
-
-        for i, mid in enumerate(ids, start=1):
-            self.message.emit(repo.by_id(mid).title)
-            enrich_movie(mid, self.scraper)                   # single API sweep
-            _set_resume_point("meta_resume", mid)
-            self.progress.emit(i, total)
-
-        _set_resume_point("meta_resume", 0)                   # clear resume
-
-
-
-class _URLWorker(QObject):
-    progress = Signal(int, int)
-    message  = Signal(str)
-    finished = Signal(bool)
-
-    def __init__(self, full: bool):
-        super().__init__()
-        self.full = full
-
-    @Slot()
-    def run(self):
-        try:
-            self._run()
-            self.finished.emit(True)
-        except Exception as e:
-            print("url-worker error:", e)
-            self.finished.emit(False)
-
-    def _run(self):
-        last = _get_resume_point("url_resume") if not self.full else None
-        rows = repo.movies_missing_trailer(resume_after=last)
-        total = len(rows)
-
-        for i, row in enumerate(rows, start=1):
-            mid, title = row["id"], row["title"]
-            self.message.emit(title)
-
-            url, *_ = locate_trailer(title)              # one lookup per movie
-            if url:
-                repo.update_youtube_link(mid, url)
-
-            _set_resume_point("url_resume", mid)
-            self.progress.emit(i, total)
-
-        _set_resume_point("url_resume", 0)               # clear when finished
-
-
+      
 # ───────────────────────── Controller helpers exposed to UI ───────────────
 def _start_worker(worker: QObject, stat_page):
     dlg = stat_page.open_progress(worker.__class__.__name__.replace("_", " "))
@@ -237,10 +140,17 @@ def _start_worker(worker: QObject, stat_page):
 
 
 def start_update_metadata(full: bool, stat_page):
+    """Kick off the TMDb→OMDb→IMDb metadata worker."""
     stat_page.enable_meta_continue(False)        # disable until worker finishes
     _start_worker(_MetaWorker(full), stat_page)
 
 
 def start_update_urls(full: bool, stat_page):
+    """Kick off the trailer‐URL repair/update worker."""
     stat_page.enable_url_continue(False)
     _start_worker(_URLWorker(full), stat_page)
+    
+def start_collect_data(stat_page):
+    "bulk collect 1,000's of movies worker"
+    stat_page.enable_collect(False)
+    _start_worker(_CollectWorker(), stat_page)
