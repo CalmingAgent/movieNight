@@ -380,3 +380,18 @@ class MovieRepo:
         """Return local movie_id for a given TMDb external id, if any."""
         row = execute("SELECT id FROM movies WHERE tmdb_id=?", (tmdb_id,)).fetchone()
         return row["id"] if row else None
+    
+    @staticmethod
+    def list_origins() -> list[str]:
+        rows = execute("SELECT DISTINCT origin FROM movies WHERE origin IS NOT NULL").fetchall()
+        return [r["origin"] for r in rows]
+
+    @staticmethod
+    def list_genres() -> list[str]:
+        rows = execute("SELECT name FROM genres ORDER BY name").fetchall()
+        return [r["name"] for r in rows]
+
+    @staticmethod
+    def list_themes() -> list[str]:
+        rows = execute("SELECT name FROM themes ORDER BY name").fetchall()
+        return [r["name"] for r in rows]
