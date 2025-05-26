@@ -19,7 +19,7 @@ from movieNight.metadata.api_clients.youtube_client import client as yt_client
 
 # ── analytics convenience ────────────────────────────────────────────────
 from movieNight.metadata.analytics.scoring    import (
-    movie_probability,
+    calculate_probability_to_watch,
     calculate_weighted_totals,
 )
 from movieNight.metadata.analytics.similarity import calculate_similarity as calculate_group_similarity
@@ -34,7 +34,7 @@ __all__ = [
     "tmdb_client",
     "omdb_client",
     "yt_client",
-    "movie_probability",
+    "calculate_probability_to_watch",
     "calculate_weighted_totals",
     "calculate_group_similarity",
     "rating_to_age_group",

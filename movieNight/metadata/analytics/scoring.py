@@ -4,7 +4,7 @@ import random
 from typing import Dict
 
 from movieNight.settings import META_SCORE_WEIGHTS, TREND_PROBABILITY_WEIGHTS, TREND_ACTOR
-from movieNight.metadata.core.repo import MovieRepo, repo
+from movieNight.metadata.core.repo import repo
 
 
 def calculate_combined_score(
@@ -27,11 +27,11 @@ def calculate_combined_score(
 def calculate_probability_to_watch(title) -> float:
     #placeholder for actually calculating
     trend_weight = TREND_PROBABILITY_WEIGHTS
-    title_id = MovieRepo.id_by_title
+    title_id = repo.id_by_title
     return round(
-        trend_weight["google_trend"] * (MovieRepo.get_google_trend_score(title_id) / 100) +
-        trend_weight["actor_trend"] * min(MovieRepo.get_actor_trend_score(title_id), 1.0) +
-        trend_weight["combined_score"] * (MovieRepo.get_combined_score(title_id) / 100), 3
+        trend_weight["google_trend"] * (repo.get_google_trend_score(title_id) / 100) +
+        trend_weight["actor_trend"] * min(repo.get_actor_trend_score(title_id), 1.0) +
+        trend_weight["combined_score"] * (repo.get_combined_score(title_id) / 100), 3
         )
 
 def calculate_expected_grade():

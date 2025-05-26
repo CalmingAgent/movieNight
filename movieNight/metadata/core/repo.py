@@ -395,3 +395,5 @@ class MovieRepo:
     def list_themes() -> list[str]:
         rows = execute("SELECT name FROM themes ORDER BY name").fetchall()
         return [r["name"] for r in rows]
+    
+repo = MovieRepo()

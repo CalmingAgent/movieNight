@@ -8,11 +8,9 @@ import requests
 
 from movieNight.utils import log_debug, normalize, throttle
 from movieNight.settings import TMDB_API_KEY
-from movieNight.metadata.movie_night_db import MovieNightDB
-import international_reference
-from tmdb_client import TMDBClient
+from movieNight.metadata.movie_night_db     import connection
+from movieNight.metadata import international_reference
 
-client = TMDBClient()
 
 class TMDBClient:
     """Thin wrapper around The Movie Database (TMDb) that persists to SQLite."""
@@ -266,3 +264,5 @@ def fix_short_durations(threshold_min: int = 5) -> None:
             )
     con.commit()
     con.close()
+    
+client = TMDBClient(connection, TMDB_API_KEY)

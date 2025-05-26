@@ -102,3 +102,4 @@ def _close_everything() -> None:
     # close root
     if isinstance(_root_conn, sqlite3.Connection):
         _root_conn.close()
+        

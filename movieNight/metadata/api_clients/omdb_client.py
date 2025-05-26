@@ -5,10 +5,9 @@ import os, re, functools, requests
 from typing import Any, Dict, Optional, Tuple, List
 
 from movieNight.utils import log_debug, throttle
-from omdb_client import OMDBClient
+
 
 OMDB_URL = "http://www.omdbapi.com/" 
-client = OMDBClient()
 class OMDBClient:
     """
     Stateless wrapper around OMDb that exposes **granular** accessors.
@@ -195,3 +194,5 @@ class OMDBClient:
     def _metascore(txt: str | None) -> Optional[float]:
         try: return float(txt.split("/")[0])
         except (AttributeError, ValueError): return None
+        
+client = OMDBClient()
