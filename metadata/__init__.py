@@ -25,8 +25,8 @@ from .analytics.scoring    import (
 from .analytics.similarity import calculate_similarity as calculate_group_similarity
 
 # ── misc helpers used by GUI ---------------------------------------------
-from international_reference import rating_to_age_group
-from ..utils.locate_trailer              import locate_trailer
+from .international_reference import rating_to_age_group
+from ..utils.locate_trailler              import locate_trailer
 
 __all__ = [
     "Movie",
