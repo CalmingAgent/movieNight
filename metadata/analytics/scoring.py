@@ -38,4 +38,7 @@ def calculate_expected_grade():
     return "--"
 def calculate_weighted_total():
     return random(0,100)
- 
+
+def calculate_actor_trend_score():
+    "calculates the actor score using google trend score and IMDB popularity "
+    pass
