@@ -13,10 +13,8 @@ from google.auth.transport.requests import Request
 from movieNight.settings import  (YOUTUBE_SEARCH_URL, YOUTUBE_API_KEY,
     CLIENT_SECRET_PATH, USER_TOKEN_PATH, YOUTUBE_SCOPES)
 from movieNight.utils    import normalize, log_debug, fuzzy_match
-from movieNight.metadata.movie_night_db    import MovieNightDB
-from movieNight.metadata.api_clients.youtube_client import YTClient
+from movieNight.metadata.movie_night_db     import connection
 
-client = YTClient()
 
 class YTClient:
     """
@@ -182,3 +180,4 @@ class YTClient:
                 log_debug(f"yt-dlp duration error: {exc}")
                 return None
         
+client = YTClient(connection, YOUTUBE_API_KEY)

@@ -5,9 +5,9 @@ from pytrends.request import TrendReq
 
 from movieNight.utils import throttle
 from movieNight.metadata import repo
-from google_trend_client import GoogleTrendClient 
 
-client = GoogleTrendClient()
+
+
 class GoogleTrendClient:
     def __init__(self, min_delay: float = 1.2) -> None:
         self._py = TrendReq(hl="en-US", tz=360)
@@ -37,3 +37,4 @@ class GoogleTrendClient:
     def _cache_set(self, term: str, score: int) -> None:
         repo.trend_cache_set(term, score)
 
+client = GoogleTrendClient()

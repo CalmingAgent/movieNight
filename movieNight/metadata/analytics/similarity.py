@@ -15,7 +15,7 @@ from itertools import combinations
 from typing import Iterable, List, Sequence, Set, Tuple
 
 from movieNight.metadata.core.models import Movie
-from movieNight.metadata.core.repo   import MovieRepo, repo            # singleton
+from movieNight.metadata.core.repo   import repo            # singleton
 from movieNight.metadata.international_reference import rating_to_age_group
 
 
@@ -32,8 +32,7 @@ def _jaccard(a: Set[str], b: Set[str]) -> float:
 
 # ── public API ─────────────────────────────────────────────────────────────
 def calculate_similarity(
-    movies: List[Movie],
-    repo: MovieRepo = repo,
+    movies: List[Movie]
 ) -> List[Tuple[int, int, float]]:
     """Return (movie_id_a, movie_id_b, similarity) for each unique pair.
 
@@ -57,7 +56,7 @@ def calculate_similarity(
 
 
 # ── internal helpers ───────────────────────────────────────────────────────
-def _pair_similarity(a: Movie, b: Movie, repo: MovieRepo) -> float:
+def _pair_similarity(a: Movie, b: Movie) -> float:
     num = _numeric_similarity(a, b)
     cat = _categorical_similarity(a, b, repo)
     return round(0.60 * num + 0.40 * cat, 3)
@@ -85,7 +84,7 @@ def _vec(m: Movie) -> Tuple[float, ...]:
 
 
 # categorical part – exact matches + Jaccard overlaps
-def _categorical_similarity(a: Movie, b: Movie, repo: MovieRepo) -> float:
+def _categorical_similarity(a: Movie, b: Movie) -> float:
     exact = [
         a.release_window == b.release_window,
         rating_to_age_group(a.origin, a.rating_cert)
