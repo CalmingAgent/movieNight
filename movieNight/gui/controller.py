@@ -154,3 +154,33 @@ def start_collect_data(stat_page):
     "bulk collect 1,000's of movies worker"
     stat_page.enable_collect(False)
     _start_worker(_CollectWorker(), stat_page)
+    
+def update_trailer_urls() -> None:
+    """
+    Scan the database for any movies whose `youtube_link` is missing or blank,
+    attempt to locate a trailer for each, and then update the `movies.youtube_link`
+    column. Logs how many were updated.
+
+    (This is a synchronous “fire‐and‐forget” version—you can still use your
+    URL‐worker/threads if you need a progress bar, but this function will just
+    do a quick pass in the foreground.)
+    """
+    # 1) Retrieve all (id, title) rows where youtube_link IS NULL or empty.
+    rows = repo.movies_missing_trailer()
+    if not rows:
+        log_debug("update_trailer_urls: no missing‐trailer movies found.")
+        return
+
+    updated_count = 0
+    for row in rows:
+        mid = row["id"]
+        title = row["title"]
+
+        # Attempt to find a trailer (TMDb → youtube‐dl → YouTube search, etc.)
+        url, *_ = locate_trailer(title)
+        if url:
+            repo.update_youtube_link(mid, url)
+            updated_count += 1
+            log_debug(f"update_trailer_urls: wrote trailer for “{title}” (id={mid})")
+
+    log_debug(f"update_trailer_urls: finished. {updated_count} / {len(rows)} URLs added.")

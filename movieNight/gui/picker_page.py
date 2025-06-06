@@ -16,7 +16,7 @@ from movieNight.utils import make_number_pixmap, open_url_host_browser
 from movieNight.metadata import repo
 from movieNight.metadata.analytics.similarity import calculate_similarity
 from movieNight.metadata.analytics.scoring import (
-    calculate_weighted_totals,
+    calculate_weighted_total,
     calculate_probability_to_watch,
     calculate_expected_grade,
 )
@@ -348,7 +348,7 @@ class PickerPage(QWidget):
         self.number_label.show()
 
         sim_pct    = int(calculate_similarity(movies) * 100)
-        wt_score   = calculate_weighted_totals(movies) * 100
+        wt_score   = calculate_weighted_total(movies) * 100
         self.similarity_label.setText(f"Similarity: {sim_pct}%")
         self.similarity_bar.setValue(sim_pct)
         # Assuming weighted label update elsewhere
