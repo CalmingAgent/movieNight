@@ -200,6 +200,14 @@ class MovieRepo:
             (movie_id, tid),
         )
         commit()
+        
+    @staticmethod
+    def list_spreadsheet_themes() -> list[str]:
+        """
+        Return a sorted list of all sheet‐tab names in the spreadsheet_themes table.
+        """
+        rows = execute("SELECT name FROM spreadsheet_themes ORDER BY name").fetchall()
+        return [r["name"] for r in rows]
 
     # ───────────────────────── aggregates / views ─────────────────────
     @staticmethod

@@ -3,12 +3,11 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from movieNight.metadata.analytics.scoring import calculate_combined_score, calculate_actor_trend_score
-from movieNight.utils import trend_score, locate_trailer
-from metadata import (
-    repo, tmdb_client, omdb_client, yt_client          # shared singletons
+from movieNight.utils import locate_trailer
+from movieNight.metadata import (
+    repo, tmdb_client, omdb_client, trend_client
 )
-from movieNight.metadata.api_clients.errors import RateLimitReached #Not defined yet
-
+from movieNight.metadata.api_clients.errors import rate_limit_reached #Not defined yet
 
 # ───────────────────────────────────────────────────────────────────────────
 # 1 ▸ combined-score recomputation for ONE movie-id
@@ -58,7 +57,7 @@ def update_scores_and_trends(movie_id: int) -> None:
 
     # ── Google trend (7-day avg) ------------------------------------------
     if repo.is_movie_field_missing(movie_id, "google_trend_score"):
-        if (gt := trend_score(title)) is not None:
+        if (gt := trend_client.fetch_7day_average(title)) is not None:
             repo.update_movie_field(movie_id, "google_trend_score", gt)
 
     # ── Actor trend (median popularity of billed actors) ------------------
@@ -146,7 +145,7 @@ def enrich_movie(movie_id: int, imdb_scraper=None) -> None:
 
     # ══════════ 5. Trend scores ════════════════════════════════════════
     if repo.is_movie_field_missing(movie_id, "google_trend_score"):
-        gt = repo.fetch_google_trend(title)           # implement in repo
+        gt = repo.fetch_google_trend(title)
         if gt is not None:
             repo.update_movie_field(movie_id, "google_trend_score", gt)
 

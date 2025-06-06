@@ -16,11 +16,12 @@ from movieNight.metadata.core.repo   import MovieRepo as repo         # singleto
 from movieNight.metadata.api_clients.tmdb_client    import client as tmdb_client
 from movieNight.metadata.api_clients.omdb_client    import client as omdb_client
 from movieNight.metadata.api_clients.youtube_client import client as yt_client
+from movieNight.metadata.api_clients.google_trend_client import client as trend_client
 
 # ── analytics convenience ────────────────────────────────────────────────
 from movieNight.metadata.analytics.scoring    import (
     calculate_probability_to_watch,
-    calculate_weighted_totals,
+    calculate_weighted_total,
 )
 from movieNight.metadata.analytics.similarity import calculate_similarity as calculate_group_similarity
 
@@ -34,8 +35,9 @@ __all__ = [
     "tmdb_client",
     "omdb_client",
     "yt_client",
+    "trend_client",
     "calculate_probability_to_watch",
-    "calculate_weighted_totals",
+    "calculate_weighted_total",
     "calculate_group_similarity",
     "rating_to_age_group",
     "locate_trailer",

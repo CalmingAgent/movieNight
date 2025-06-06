@@ -38,7 +38,7 @@ class MainWindow(QMainWindow):
         self.nav_list.setFixedWidth(170)
         for icon_name, label in [
             ("grid", "RNJesus"),
-            ("bar-chart-line", "Maintenance"),
+            ("bar-chart-line", "Maintenance & Stats"),
         ]:
             item = QListWidgetItem(ICON(icon_name), label)
             item.setTextAlignment(Qt.AlignHCenter)
