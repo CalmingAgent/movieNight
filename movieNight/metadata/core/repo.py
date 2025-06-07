@@ -17,7 +17,7 @@ _ALLOWED_MOVIE_COLS: Set[str] = {
     "title", "plot_desc", "year", "release_window", "rating_cert", "duration_seconds",
     "youtube_link", "box_office_expected", "box_office_actual",
     "google_trend_score", "actor_trend_score", "combined_score",
-    "franchise", "origin",
+    "franchise", "origin", "tmdb_id"
 }
 
 
@@ -254,6 +254,28 @@ class MovieRepo:
         ).fetchone()
         return row["combined_score"] if row else None
     
+    @staticmethod
+    def is_movie_field_missing(movie_id: int, field: str) -> bool:
+        """
+        Return True if *field* is NULL / empty for the given movie.
+
+        Raises
+        ------
+        ValueError  if *field* is not a valid column.
+        """
+        if field not in _ALLOWED_MOVIE_COLS and field != "tmdb_id":
+            raise ValueError(f"Unknown movie column: {field}")
+
+        row = execute(
+            f"SELECT {field} FROM movies WHERE id=?",
+            (movie_id,)
+        ).fetchone()
+
+        if not row:
+            return True                         # no such movie ⇒ “missing”
+
+        val = row[field]
+        return val is None or (isinstance(val, str) and val.strip() == "")
         # ───────────────────────────── bulk helpers ──────────────────────────
     @staticmethod
     def bulk_insert_movies(rows: List[Dict[str, Any]]) -> List[int]:
