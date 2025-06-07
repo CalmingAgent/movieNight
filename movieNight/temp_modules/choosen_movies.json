@@ -115,5 +115,6 @@
     { "date": "", "chosen": "Logan Lucky", "voted_off": [] },
     { "date": "", "chosen": "Penguin Highway", "voted_off": [] },
     { "date": "", "chosen": "Love & Basketball", "voted_off": [] },
-    { "date": "", "chosen": "The Secret World of Arrietty", "voted_off": [] }
+    { "date": "", "chosen": "The Secret World of Arrietty", "voted_off": [] },
+    { "date": "2025/06/05", "chosen": "", "voted_off": [] }
   ]

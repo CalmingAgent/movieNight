@@ -101,4 +101,11 @@ CREATE TABLE IF NOT EXISTS movie_aliases (
     PRIMARY KEY (movie_id, alt_title)
 );
 
+CREATE TABLE IF NOT EXISTS trend_cache (
+    term   TEXT NOT NULL,     -- e.g. "Oppenheimer", "Ryan Gosling"
+    as_of  DATE NOT NULL,     -- ISO-8601 "YYYY-MM-DD" (UTC)
+    value  TEXT,              -- 0-100; TEXT so '' can represent “no data”
+    PRIMARY KEY (term, as_of)
+);
+
 CREATE TABLE IF NOT EXISTS kv_store (key TEXT PRIMARY KEY, value TEXT);

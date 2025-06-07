@@ -85,7 +85,7 @@ class TMDBClient:
             "rating_cert":       rating_cert,                 # renamed column
             "duration_seconds":  details.get("runtime", 0) * 60 if details.get("runtime") else None,
             "youtube_link":      trailer_url,
-            "origin_country":    origin,
+            "origin":    origin,
             # box_office, trend scores, etc. can stay NULL for now
         }
 
@@ -167,7 +167,7 @@ class TMDBClient:
             "rating_cert":       rating_cert,
             "duration_seconds":  runtime_sec,
             "youtube_link":      trailer_url,
-            "origin_country":    origin,           # if you renamed, keep same label
+            "origin":    origin,           # if you renamed, keep same label
             "box_office_actual": box_office,
             "franchise":         franchise,
         }
