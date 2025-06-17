@@ -412,6 +412,21 @@ class MovieRepo:
         return row["id"] if row else None
     
     @staticmethod
+    def update_movie_tmdb_id(movie_id: int, tmdb_id: int) -> None:
+        """
+        Persist TMDb’s numeric id into movies.tmdb_id.
+        """
+        execute(
+            """
+            UPDATE movies
+            SET tmdb_id = ?
+            WHERE id      = ?
+            """,
+            (tmdb_id, movie_id))
+            
+        commit()
+        
+    @staticmethod
     def list_origins() -> list[str]:
         rows = execute("SELECT DISTINCT origin FROM movies WHERE origin IS NOT NULL").fetchall()
         return [r["origin"] for r in rows]
@@ -426,4 +441,19 @@ class MovieRepo:
         rows = execute("SELECT name FROM themes ORDER BY name").fetchall()
         return [r["name"] for r in rows]
     
+    @staticmethod
+    def update_movie_franchise(movie_id: int, franchise: str) -> None:
+        """
+        Persist a franchise / universe label into movies.franchise.
+        Example values: 'Marvel', 'Star Wars', 'Pixar'.
+        """
+        execute(
+            """
+            UPDATE movies
+            SET franchise = ?
+            WHERE id        = ?
+            """,
+            (franchise, movie_id))
+        commit()
+        
 repo = MovieRepo()
