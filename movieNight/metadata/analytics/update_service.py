@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional
 from movieNight.metadata.analytics.scoring import calculate_combined_score, calculate_actor_trend_score
 from movieNight.utils import locate_trailer
 from movieNight.metadata import (
-    repo, tmdb_client, omdb_client, trend_client
+    repo, tmdb_client, omdb_client, trend_client, trend_client
 )
 from movieNight.metadata.api_clients.errors import rate_limit_reached #Not defined yet
 
@@ -120,7 +120,7 @@ def enrich_movie(movie_id: int, imdb_scraper=None) -> None:
             repo.update_movie_field(movie_id, "duration_seconds", rt)
 
     if repo.is_movie_field_missing(movie_id, "box_office_actual"):
-        bo = omdb_client.get_boxoffice(title=title)
+        bo = omdb_client.get_box_office(title=title)
         if bo:
             repo.update_movie_field(movie_id, "box_office_actual", bo)
 
@@ -145,7 +145,7 @@ def enrich_movie(movie_id: int, imdb_scraper=None) -> None:
 
     # ══════════ 5. Trend scores ════════════════════════════════════════
     if repo.is_movie_field_missing(movie_id, "google_trend_score"):
-        gt = repo.fetch_google_trend(title)
+        gt = trend_client.fetch_7day_average(title)
         if gt is not None:
             repo.update_movie_field(movie_id, "google_trend_score", gt)
 

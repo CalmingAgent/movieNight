@@ -6,6 +6,7 @@ from dataclasses import dataclass
 class Movie:
     id: int
     title: str
+    tmdb_id: int = None
     plot_desc: str | None = None
     year: int | None = None
     release_window: str | None = None

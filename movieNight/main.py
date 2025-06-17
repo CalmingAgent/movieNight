@@ -17,6 +17,8 @@ class UpdateWorker(QObject):
 
     @Slot()
     def run(self) -> None:
+        from movieNight.metadata import movie_night_db
+        movie_night_db.attach_thread()
         try:
             update_data()
             self.finished.emit(True)

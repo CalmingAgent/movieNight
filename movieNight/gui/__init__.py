@@ -9,7 +9,7 @@ All Qt widgets, pages and controllers.
     from gui import MainWindow, generate_movies
 """
 
-from .controller import (
+from movieNight.gui.controller import (
     generate_movies,
     add_remove_movie,
     update_data,              # small sheet sync
@@ -17,10 +17,10 @@ from .controller import (
     start_update_urls,        # bulk trailer‐URL fixup
     start_collect_data,       # bulk data collection stub
 )
-from .main_window  import MainWindow
-from .picker_page  import PickerPage
-from .movie_card   import MovieCard
-from .stat_page    import StatsPage
+from movieNight.gui.main_window  import MainWindow
+from movieNight.gui.picker_page  import PickerPage
+from movieNight.gui.movie_card   import MovieCard
+from movieNight.gui.stat_page    import StatsPage
 
 __all__ = [
     "generate_movies", "add_remove_movie",

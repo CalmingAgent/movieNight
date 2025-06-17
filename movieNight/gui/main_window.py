@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime, random, urllib.parse, sys
 
 from PySide6.QtCore    import Qt, Slot
-from PySide6.QtGui     import QAction
+from PySide6.QtGui     import QAction, QGuiApplication
 from PySide6.QtWidgets import (
     QMainWindow, QListWidget, QListWidgetItem,
     QStackedWidget, QSplitter, QMessageBox
@@ -58,7 +58,7 @@ class MainWindow(QMainWindow):
 
         # ── toolbar ─────────────────────────────────────────────────────
         tb = self.addToolBar("Main")
-        act = QAction(ICON("refresh"), "Re-roll", self)
+        act = QAction( "Re-roll", self)
         act.setShortcut("Ctrl+R")
         act.triggered.connect(self._on_generate)
         tb.addAction(act)
@@ -68,6 +68,8 @@ class MainWindow(QMainWindow):
         sp.request_update_meta.connect(lambda full: start_update_metadata(full, sp))
         sp.request_update_urls.connect(lambda full: start_update_urls(full, sp))
         sp.request_update_collect.connect(lambda full: start_collect_data(full, sp))
+        
+
 
     # ───────────────────────────────────────────────────────────────────
     @Slot()
