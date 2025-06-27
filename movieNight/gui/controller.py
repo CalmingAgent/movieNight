@@ -90,7 +90,7 @@ def add_remove_movie(current: list[str], pool: list[str], delta: int) -> list[st
     elif len(lst) > 1:
         lst.pop(random.randrange(len(lst)))
     return lst
-
+#This is also called
 def update_data() -> None:
     sheets_xlsx.download_spreadsheet_as_xlsx(SPREADSHEET_ID, GHIBLI_SHEET_PATH)
     touched: set[int] = set()

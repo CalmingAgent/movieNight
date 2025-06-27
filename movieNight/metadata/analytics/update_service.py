@@ -8,66 +8,75 @@ from movieNight.metadata import (
     repo, tmdb_client, omdb_client, trend_client, trend_client
 )
 from movieNight.metadata.api_clients.errors import rate_limit_reached #Not defined yet
+from movieNight.metadata.analytics.fairness import (
+    Baselines, gtrend_fair, actor_trend_fair, combined_score_fair
+)
 
+# ─────────────────────────  0 ▸ baselines  ──────────────────────────
+# Build once at module-import time
+BASE = Baselines(
+    pop_by_country    = repo.population_share_by_country(),
+    movies_by_country = repo.catalogue_share_by_country(),
+)
+INTERNET_PEN = repo.internet_penetration_by_country()   # {ISO: 0‥1}
 # ───────────────────────────────────────────────────────────────────────────
 # 1 ▸ combined-score recomputation for ONE movie-id
 # ───────────────────────────────────────────────────────────────────────────
-def recalculate_combined_score(movie_id: int) -> None:
-    """
-    Re-calculate movies.combined_score from whatever rating rows exist.
-    """
-    r: Dict[str, float] = repo.current_ratings_dict(movie_id)   # {'IMDB': 78, …}
-    new_score = calculate_combined_score(
-        imdb        = r.get("IMDB", 0),
-        rt_critic   = r.get("RT_CRITIC", 0),
-        rt_audience = r.get("RT_AUDIENCE", 0),
-        metacritic  = r.get("METACRITIC", 0),
-    )
+# ───────────────────────── 1 ▸ combined score  ──────────────────────
+def recalc_combined_fair(movie_id: int) -> None:
+    movie = repo.by_id(movie_id)
+    r = repo.current_ratings_dict(movie_id)   # {'IMDB': (78,1234), …}
+
+    # build {src: (score, n)} even if you only have ONE column / src
+    ratings = {
+        "IMDB"        : (r.get("IMDB", 0),      r.get("IMDB_N", 0)),
+        "RTCritic"    : (r.get("RT_CRITIC", 0), r.get("RT_CRITIC_N", 0)),
+        "RTAudience"  : (r.get("RT_AUDIENCE",0),r.get("RT_AUDIENCE_N",0)),
+        "MetacriticCrit": (r.get("METACRITIC",0),r.get("METACRITIC_N",0)),
+    }
+    new_score = combined_score_fair(movie, ratings, BASE)
     repo.update_movie_field(movie_id, "combined_score", new_score)
 
-# alias for back-compat with your old name
-recalculate_new_weighted_scores = recalculate_combined_score
+# keep alias for old name
+recalculate_combined_score = recalc_combined_fair
 
 
 # ───────────────────────────────────────────────────────────────────────────
 # 2 ▸ full refresh of ratings + trends for ONE movie-id
 # ───────────────────────────────────────────────────────────────────────────
 def update_scores_and_trends(movie_id: int) -> None:
-    """
-    Refresh *all* numeric metadata for a movie:
+    """Refresh ratings + FAIR trend / combined score for one movie."""
+    m      = repo.by_id(movie_id)
+    title  = m.title
 
-        TMDb user rating  → ratings table
-        OMDb critic scores → ratings table
-        Google trend      → movies.google_trend_score
-        Actor trend       → movies.actor_trend_score
-        Combined score    → movies.combined_score
-    """
-    m = repo.by_id(movie_id)
-    title = m.title
-
-    # ── TMDb user rating ---------------------------------------------------
+    # 2.1  ⎯ ratings─────────────────────────────────────
     if (t := tmdb_client.fetch_user_rating(title)):
-        repo.upsert_rating(movie_id, "TMDB", t[0] * 10, t[1])   # 0-100 scale
+        repo.upsert_rating(movie_id, "TMDB", t[0] * 10, t[1])
 
-    # ── OMDb critic scores -------------------------------------------------
     if (om := omdb_client.get_ratings(title=title)):
         for src, val in om.items():
             if val is not None:
                 repo.upsert_rating(movie_id, src.upper(), val)
 
-    # ── Google trend (7-day avg) ------------------------------------------
+    # 2.2  ⎯ Google Trend (fair) ─────────────────────────────────────
     if repo.is_movie_field_missing(movie_id, "google_trend_score"):
         if (gt := trend_client.fetch_7day_average(title)) is not None:
-            repo.update_movie_field(movie_id, "google_trend_score", gt)
+            fair_gt = gtrend_fair(gt, m.origin, BASE, INTERNET_PEN)
+            repo.update_movie_field(movie_id, "google_trend_score", fair_gt)
 
-    # ── Actor trend (median popularity of billed actors) ------------------
+    # 2.3  ⎯ Actor Trend (fair) ──────────────────────────────────────
     if repo.is_movie_field_missing(movie_id, "actor_trend_score"):
-        if (ats := calculate_actor_trend_score(title)) is not None:
-            repo.update_movie_field(movie_id, "actor_trend_score", ats)
+        if (ats_raw := calculate_actor_trend_score(title)) is not None:
+            fair_ats = actor_trend_fair(
+                imdb_pop = ats_raw,          # assuming that fn returns IMDb pop
+                gtrend   = m.google_trend_score or 0,
+                movie    = m,
+                base     = BASE,
+            )
+            repo.update_movie_field(movie_id, "actor_trend_score", fair_ats)
 
-    # ── Combined meta score ----------------------------------------------
-    recalculate_combined_score(movie_id)
-
+    # 2.4  ⎯ Combined score ─────────────────────────────────────────
+    recalc_combined_fair(movie_id)
 
 # ───────────────────────────────────────────────────────────────────────────
 # 3 ▸ batch refresh for every movie missing a trend score
@@ -112,6 +121,13 @@ def enrich_movie(movie_id: int, imdb_scraper=None) -> None:
 
         for g in meta.get("genres", []):
             repo.link_movie_genre(movie_id, g)
+            
+    # ── write tmdb_id and franchise first ─
+    if "tmdb_id" in mf and repo.is_movie_field_missing(movie_id, "tmdb_id"):
+        repo.update_movie_tmdb_id(movie_id, mf["tmdb_id"])
+
+    if "franchise" in mf and mf.get("franchise") and repo.is_movie_field_missing(movie_id, "franchise"):
+        repo.update_movie_franchise(movie_id, mf["franchise"])
 
     # ══════════ 2. OMDb fallback ═══════════════════════════════════════
     if repo.is_movie_field_missing(movie_id, "duration_seconds"):

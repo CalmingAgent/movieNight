@@ -167,7 +167,7 @@ class TMDBClient:
             "rating_cert":       rating_cert,
             "duration_seconds":  runtime_sec,
             "youtube_link":      trailer_url,
-            "origin":    origin,           # if you renamed, keep same label
+            "origin":            origin,           # if you renamed, keep same label
             "box_office_actual": box_office,
             "franchise":         franchise,
         }
@@ -201,6 +201,13 @@ class TMDBClient:
 
         # TMDb always includes these two keys (default 0, 0)
         return float(details["vote_average"]), int(details["vote_count"])
+    
+    def imdb_from_tmdb(tmdb_id: int, api_key: str) -> str | None:
+        url = f"https://api.themoviedb.org/3/movie/{tmdb_id}/external_ids"
+        r = requests.get(url, params={"api_key": api_key}, timeout=10)
+        r.raise_for_status()
+        return r.json().get("imdb_id") or None
+
     @staticmethod
     def _classify_release_window(date_str: str, country: str | None = "US") -> str:
         if not date_str:
