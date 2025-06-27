@@ -14,10 +14,9 @@ from movieNight.metadata.movie_night_db import execute, executemany, commit, con
 from movieNight.metadata.core.models import Movie
 
 _ALLOWED_MOVIE_COLS: Set[str] = {
-    "title", "plot_desc", "year", "release_window", "rating_cert", "duration_seconds",
+    "title", "plot_desc", "release_date", "release_window", "rating_cert", "duration_seconds",
     "youtube_link", "box_office_expected", "box_office_actual",
-    "google_trend_score", "actor_trend_score", "combined_score",
-    "franchise", "origin", "tmdb_id"
+    "combined_score", "franchise_id", "origin_iso2", "tmdb_id", "imdb_id","created_at", "updated_at"
 }
 
 
@@ -441,19 +440,41 @@ class MovieRepo:
         rows = execute("SELECT name FROM themes ORDER BY name").fetchall()
         return [r["name"] for r in rows]
     
+
+    def _ensure_franchise(name: str) -> int:
+        row = execute("SELECT id FROM franchises WHERE name=?", (name,)).fetchone()
+        if row:
+            return row["id"]
+        cur = execute("INSERT INTO franchises(name) VALUES(?)", (name,))
+        commit()
+        return cur.lastrowid
+    
     @staticmethod
     def update_movie_franchise(movie_id: int, franchise: str) -> None:
         """
         Persist a franchise / universe label into movies.franchise.
         Example values: 'Marvel', 'Star Wars', 'Pixar'.
         """
-        execute(
-            """
-            UPDATE movies
-            SET franchise = ?
-            WHERE id        = ?
-            """,
-            (franchise, movie_id))
+        fid = MovieRepo._ensure_franchise(franchise)
+        execute("UPDATE movies SET franchise_id=? WHERE id=?", (fid, movie_id))
         commit()
+        
+    def _ensure_country(name_or_iso: str) -> str:
+        """
+        Return an ISO-2 country code, inserting into `countries`
+        if it's not already present. Accepts 'US' or 'United States'.
+        """
+        code = name_or_iso.upper() if len(name_or_iso) == 2 else None
+        if not code:
+            row = execute("SELECT iso2 FROM countries WHERE name=?", (name_or_iso,)).fetchone()
+            if row:
+                code = row["iso2"]
+        if not code:
+            raise ValueError(f"Unrecognised country: {name_or_iso}")
+        execute("INSERT OR IGNORE INTO countries(iso2, name) VALUES (?,?)",
+                (code, name_or_iso))
+        commit()
+        return code
+
         
 repo = MovieRepo()
