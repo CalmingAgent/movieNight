@@ -5,12 +5,11 @@ from typing import Any, Dict, Optional
 from movieNight.metadata.analytics.scoring import calculate_combined_score, calculate_actor_trend_score
 from movieNight.utils import locate_trailer
 from movieNight.metadata import (
-    repo, tmdb_client, omdb_client, trend_client, trend_client
-)
+    repo, tmdb_client, omdb_client, trend_client, trend_client)
 from movieNight.metadata.api_clients.errors import rate_limit_reached #Not defined yet
 from movieNight.metadata.analytics.fairness import (
-    Baselines, gtrend_fair, actor_trend_fair, combined_score_fair
-)
+    Baselines, gtrend_fair, actor_trend_fair, combined_score_fair)
+from movieNight.metadata.identity.fingerprint import same_movie, _NORMALIZERS
 
 # ─────────────────────────  0 ▸ baselines  ──────────────────────────
 # Build once at module-import time
@@ -91,6 +90,52 @@ def refresh_missing_trends() -> None:
     ]
     for mid in mids:
         update_scores_and_trends(mid)
+        
+def safe_omdb_payload(
+    *,
+    tmdb_blob: Dict[str, Any],
+    title: str,
+    imdb_id: str | None,
+    runtime_sec: int | None,
+    release_date: str | None
+) -> Optional[Dict[str, Any]]:
+    """
+    1) Try OMDb by IMDb ID.
+    2) Fall back to title search + heuristic pick.
+    3) Confirm with same_movie().
+    Return raw OMDb JSON ONLY if it’s a confident match.
+    """
+    # ––– Step 1: ID lookup –––
+    if imdb_id:
+        if (blob := omdb_client.get_by_id(imdb_id)):
+            return blob                     # exact hit
+
+    # ––– Step 2: title search –––
+    blob = omdb_client.smart_fetch(
+        title        = title,
+        imdb_id      = None,
+        runtime      = runtime_sec // 60 if runtime_sec else None,
+        release_date = release_date,
+    )
+    if not blob:
+        return None
+
+    # ––– Step 3: compare fingerprints –––
+    fp_tm  = _NORMALIZERS["TMDB"](tmdb_blob)
+    fp_om  = _NORMALIZERS["OMDB"](blob)
+    is_same, score = same_movie(fp_tm, fp_om)
+    return blob if is_same else None
+
+def omdb_to_columns(blob: Dict[str, Any]) -> Dict[str, Any]:
+    """Map OMDb JSON → your movies table columns. No business rules here."""
+    col = {}
+    if rt := omdb_client.extract_runtime(blob):
+        col["duration_seconds"] = rt
+    if bo := omdb_client.extract_box_office(blob):
+        col["box_office_actual"] = bo
+    if plot := blob.get("Plot"):
+        col["plot_desc"] = plot
+    return col
 
 def enrich_movie(movie_id: int, imdb_scraper=None) -> None:
     """
