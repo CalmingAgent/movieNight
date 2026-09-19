@@ -34,12 +34,12 @@ def calculate_probability_to_watch(title) -> float:
         trend_weight["combined_score"] * (repo.get_combined_score(title_id) / 100), 3
         )
 
-def calculate_expected_grade():
+def calculate_expected_grade(movie: None) -> float:
     "compares movie to graded movies in the user_ratings and guess what the grade will be"
     return "--"
-def calculate_weighted_total():
+def calculate_weighted_total(movie:None) -> float:
     return random(0,100)
 
-def calculate_actor_trend_score():
+def calculate_actor_trend_score(movie=None) -> float:
     "calculates the actor score using google trend score and IMDB popularity "
     pass

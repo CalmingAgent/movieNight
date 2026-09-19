@@ -14,9 +14,9 @@ from movie_night.metadata.movie_night_db import execute, executemany, commit, co
 from movie_night.metadata.core.models import Movie
 
 _ALLOWED_MOVIE_COLS: Set[str] = {
-    "title", "plot_desc", "release_date", "release_window", "rating_cert", "duration_seconds",
-    "youtube_link", "box_office_expected", "box_office_actual",
-    "combined_score", "franchise_id", "origin", "tmdb_id", "imdb_id","created_at", "updated_at"
+    "title", "plot_desc", "year", "release_window", "rating_cert", "duration_seconds",
+    "youtube_link", "box_office_expected", "box_office_actual", "google_trend_score", "actor_trend_score",
+    "combined_score", "franchise_id", "origin", "tmdb_id", "imdb_id","updated_at"
 }
 
 
@@ -202,11 +202,18 @@ class MovieRepo:
         
     @staticmethod
     def list_spreadsheet_themes() -> list[str]:
-        """
-        Return a sorted list of all sheet‐tab names in the spreadsheet_themes table.
-        """
-        rows = execute("SELECT name FROM spreadsheet_themes ORDER BY name").fetchall()
-        return [r["name"] for r in rows]
+        """Return all unique spreadsheet themes from the local DB except 'Seen'."""
+        with connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT DISTINCT theme 
+                FROM movies 
+                WHERE theme IS NOT NULL 
+                AND TRIM(theme) != ''
+                AND LOWER(TRIM(theme)) != 'seen'
+                ORDER BY theme ASC
+            """)
+            return [row[0] for row in cursor.fetchall()]
 
     # ───────────────────────── aggregates / views ─────────────────────
     @staticmethod
@@ -227,6 +234,16 @@ class MovieRepo:
             (movie_id,)
         ).fetchone()
         return row["avg"]
+
+    @staticmethod
+    def upsert_rating(movie_id: int, rating: str) -> None:
+        """Update or set the rating certification for a movie."""
+        with connection() as conn:
+            conn.execute(
+                "UPDATE movies SET rating_cert = ? WHERE id = ?",
+                (rating, movie_id)
+            )
+            conn.commit()
     
     @staticmethod
     def get_google_trend_score(movie_id: int) -> Optional[int]:

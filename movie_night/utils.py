@@ -1,4 +1,3 @@
-
 import functools
 import pathlib
 import random
@@ -6,7 +5,7 @@ import re
 import json
 from datetime import datetime
 import subprocess
-from sys import platform
+import platform
 import tempfile
 import time
 from typing import Optional, List, Tuple

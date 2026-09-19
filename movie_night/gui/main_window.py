@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
         """Validate UI, pick movies, and populate the grid or show an error."""
         try:
             count = int(self.picker_page.attendee_input.text().strip())
-            sheet = self.picker_page.sheet_input.text().strip()
+            sheet = self.picker_page.sheet_combo.currentText().strip()
             picks, trailer_map = generate_movies(sheet, count)
         except ValueError as e:
             QMessageBox.warning(self, "Error", str(e))
@@ -113,3 +113,19 @@ class MainWindow(QMainWindow):
             for t in new
         }
         self.picker_page.display_movies(new, trailer_map)
+
+    @Slot()
+    def _on_update_finished(self) -> None:
+        """Runs once the Google Sheets sync has completed."""
+        # 1. Re-enable the button
+        self.picker_page.update_btn.setEnabled(True)
+        self.statusBar().showMessage("Update complete!", 3000)
+
+        # 2. Refresh the dropdown with the newly imported tabs
+        self.picker_page.refresh_sheets()
+
+        QMessageBox.information(
+            self,
+            "Success",
+            "Movie database and theme tabs updated successfully!",
+        )
