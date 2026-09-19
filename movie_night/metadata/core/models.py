@@ -20,6 +20,7 @@ class Movie:
     combined_score: float | None = None
     franchise: str | None = None
     origin: str | None = None
+    updated_at: str | None = None
 
     @property
     def age_bucket(self) -> str:

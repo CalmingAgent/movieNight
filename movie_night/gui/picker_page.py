@@ -352,6 +352,22 @@ class PickerPage(QWidget):
         self.similarity_label.setText(f"Similarity: {sim_pct}%")
         self.similarity_bar.setValue(sim_pct)
         # Assuming weighted label update elsewhere
+
+    def refresh_sheets(self) -> None:
+        """Reload the theme list from the database into sheet_combo."""
+        current = self.sheet_combo.currentText()
+        self.sheet_combo.blockSignals(True)
+        self.sheet_combo.clear()
+        
+        sheets = sorted(repo.list_spreadsheet_themes())
+        self.sheet_combo.addItems(sheets + ["Random"])
+        
+        # Restore previous selection if it still exists
+        idx = self.sheet_combo.findText(current)
+        if idx >= 0:
+            self.sheet_combo.setCurrentIndex(idx)
+            
+        self.sheet_combo.blockSignals(False)
         
     @Slot()
     def _open_report_dialog(self) -> None:
@@ -369,3 +385,5 @@ class PickerPage(QWidget):
         if dialog.exec() == QDialog.Accepted:
             reported = [cb.text() for cb in dialog.findChildren(QCheckBox) if cb.isChecked()]
             QMessageBox.information(self, "Reported", f"Thanks for reporting: {', '.join(reported)}")
+
+    
